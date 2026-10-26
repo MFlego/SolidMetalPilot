@@ -60,9 +60,14 @@ namespace SolidworksExecution.Controllers
                 info["comAttached"] = false;
                 info["comError"] = ex.Message;
             }
+            // SolidPilot Bridge add-in (in-process): UI-thread responsiveness, open command and modal dialogs. Absent bridge => bridgeLoaded=false, nothing else changes.
+            var bridgeState = BridgeClient.State();
+            info["bridgeLoaded"] = bridgeState != null;
+            if (bridgeState != null) info["bridgeState"] = Newtonsoft.Json.Linq.JObject.Parse(bridgeState);
+            info["staTimeoutSeconds"] = StaExecutor.TimeoutSeconds;
             object attached;
             info.TryGetValue("comAttached", out attached);
-            ExecLog.Write($"<- health UP comAttached={attached}");
+            ExecLog.Write($"<- health UP comAttached={attached} bridge={info["bridgeLoaded"]}");
             return Request.CreateResponse(HttpStatusCode.OK, info);
         }
 
@@ -116,6 +121,19 @@ namespace SolidworksExecution.Controllers
                 // All COM-touching work runs on the single dedicated STA thread (P0.1) — OWIN request
                 // threads are MTA, which made sheet-metal calls return null and add_edge_feature deadlock.
                 response = StaExecutor.Instance.Run(() => Dispatch(request));
+            }
+            catch (SolidWorksBlockedException ex)
+            {
+                // SolidWorks is blocked by a modal dialog / not responding (SolidPilot Bridge pre-flight or STA timeout). Reported as an ordinary FAILED tool result with a
+                // stable code so the agent can read the dialog text and decide, instead of an HTTP 500 or a hung request.
+                ExecLog.Write($"<- {request.Tool} FAILED {ex.Code}: {ex.Message}");
+                return Request.CreateResponse(HttpStatusCode.OK, new ExecutionResponse
+                {
+                    OperationId = request.OperationId,
+                    Status = "FAILED",
+                    LastKnownStateVersion = _guard.GetCurrentStateVersion(),
+                    Error = new ExecutionError { Code = ex.Code, Message = ex.Message }
+                });
             }
             catch (System.Exception ex)
             {
