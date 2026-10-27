@@ -12,6 +12,8 @@ SolidPilot is **not** a Claude-only plugin; it is **a general bridge between Sol
 
 > Repository: `mcp-server-solidworks` · Public name: **SolidPilot** · Target version: **SolidWorks 2026 SP3**
 
+> **Execution is in-process.** The tools no longer run in a separate server: they run **inside SolidWorks**, in the *SolidPilot Bridge* add-in, behind the same REST contract on `localhost:5000` — more stable, typed, and wrapped in a safety gate (dialog refusal, automatic snapshots, STOP, crash forensics). See [In-process execution](#in-process-execution-the-solidpilot-bridge-add-in), and [Installation](#installation-and-running) to register the add-in.
+
 ---
 
 ## Core Idea
@@ -49,7 +51,7 @@ flowchart TD
     U(["User + AI client<br/>Claude · OpenClaw · OpenAI · local LLM"])
 
     subgraph ADAPT["adapters/* — MCP bridge · MCP BOUNDARY = top"]
-        LOW["38 low-level tools<br/>sketch · extrude · sheet-metal · drawing · assembly · analyze"]
+        LOW["57 low-level tools<br/>sketch · extrude · sheet-metal · parametric · drawing · assembly · analyze"]
         RIR["rebuild_from_ir · save_analysis · compare_parts/assemblies"]
         SFG["submit_feature_graph<br/>forward single tool"]
     end
@@ -60,30 +62,39 @@ flowchart TD
         CO["pycompiler<br/>lowering + reference resolver (geometric anchors v0)"]
     end
 
-    subgraph EXE["execution/solidworks — C# .NET 4.8 · the ONLY COM-touching layer"]
-        EX["Execution<br/>idempotency · state_version"]
+    subgraph SWP["SolidWorks process (sldworks.exe) — the default host"]
+        subgraph BR["execution/solidworks/SolidPilotBridge — add-in · the ONLY COM-touching layer"]
+            SH["Shell (stable)<br/>REST facade :5000 · ToolGate · dialog watch<br/>snapshots · task pane · named pipe"]
+            TL["Tools assembly (hot-reloadable)<br/>idempotency · state_version · every tool"]
+        end
+        API(["SolidWorks API · UI thread<br/>no process boundary"])
     end
 
-    SW(["SolidWorks · COM"])
+    EXE["SolidworksExecution.exe<br/>legacy out-of-process host<br/>EXECUTION_MODE=exe · fallback only"]
 
     %% Working today (thick)
     U == "MCP: low-level tools (primary today)" ==> LOW
-    LOW == "REST" ==> EX
+    LOW == "REST :5000" ==> SH
     U == "MCP: rebuild_from_ir (reverse round-trip — WORKS)" ==> RIR
     IR ==> CO
     RIR == "REST" ==> CO
-    CO == "REST" ==> EX
-    EX == "COM" ==> SW
+    CO == "REST :5000" ==> SH
+    SH == "one call at a time" ==> TL
+    TL == "in-process" ==> API
+
+    %% Fallback host (dotted): same REST contract and the same tool source, in its own process
+    LOW -. "REST (EXECUTION_MODE=exe)" .-> EXE
+    EXE -. "COM" .-> API
 
     %% Reverse discovery step: read an existing part → propose an IR
-    EX -. "analyze_model / analyze_drawing (DXF/DWG)" .-> IR
+    TL -. "analyze_model / analyze_drawing (DXF/DWG)" .-> IR
 
     %% Planned forward collapse (dashed)
     IR -. "forward: submit_feature_graph" .-> SFG
     SFG -. "REST" .-> CO
 ```
 
-Read the diagram by line style: a **thick line works today**, a **dashed line is planned**. Two MCP doors are live — the low-level tools (the primary path today), and **`rebuild_from_ir`**, which drives the **real** deterministic compiler to reproduce a part — or an assembly — from its Feature Graph IR. The dotted reverse arrow is the discovery step: `analyze_model`/`analyze_drawing` read an existing part so an IR can be proposed for it. The only dashed (still-planned) piece is the *forward* collapse — a single `submit_feature_graph` tool that would replace the low-level surface for building from scratch; it runs through the same compiler.
+Read the diagram by line style: a **thick line works today**, a **dashed line is planned**. Two MCP doors are live — the low-level tools (the primary path today), and **`rebuild_from_ir`**, which drives the **real** deterministic compiler to reproduce a part — or an assembly — from its Feature Graph IR. The dotted reverse arrow is the discovery step: `analyze_model`/`analyze_drawing` read an existing part so an IR can be proposed for it. The only dashed (still-planned) piece is the *forward* collapse — a single `submit_feature_graph` tool that would replace the low-level surface for building from scratch; it runs through the same compiler. The dotted line from the adapter to `SolidworksExecution.exe` is not a plan: it is the **legacy fallback host** (see [In-process execution](#in-process-execution-the-solidpilot-bridge-add-in)).
 
 The system has four layers:
 
@@ -91,10 +102,10 @@ The system has four layers:
 |---|---|---|---|
 | Planner / Intent | `cad-planner/` | AI model + IR schema | Turns user intent into a CAD-neutral Feature Graph IR. Never touches COM, never emits raw tool calls. |
 | Compiler | `compiler/solidworks/` | Deterministic (no LLM) | Lowers the IR into ordered tool calls; resolves semantic references (e.g. `top_face`, `center`) against live geometry state. |
-| Execution | `execution/solidworks/` | C# (.NET Framework 4.8) | The **only** layer that touches the SolidWorks COM API. The single source of truth for CAD state. |
+| Execution | `execution/solidworks/` | C# (.NET Framework) | The **only** layer that touches the SolidWorks COM API. The single source of truth for CAD state. **Runs inside SolidWorks**, as the SolidPilot Bridge add-in (default); the same tool source also builds as a standalone `.exe` (fallback). |
 | Adapter | `adapters/claude/` | Python (MCP SDK v2) | MCP protocol bridge. The MCP boundary sits at the **top** of the system. |
 
-**MCP sits at the top:** it is the boundary where the AI client meets the system, not an internal transport. Everything below the IR is deterministic and communicates over plain REST.
+**MCP sits at the top:** it is the boundary where the AI client meets the system, not an internal transport. Everything below the IR is deterministic and communicates over plain REST — to a REST façade that now lives **inside the SolidWorks process** (below).
 
 The `adapters/` layer is provider-specific and replaceable. Because the execution and planner layers do not know which client is calling, adding a new AI client (OpenClaw, OpenAI, a local LLM, etc.) means only writing a new adapter — the IR, compiler, and execution layers stay unchanged.
 
@@ -102,9 +113,139 @@ The `adapters/` layer is provider-specific and replaceable. Because the executio
 
 ---
 
+## In-process execution: the SolidPilot Bridge add-in
+
+The tools no longer run in a separate process. Since the in-process host became the default (bridge v0.8), **every tool runs inside SolidWorks itself**, in an add-in: [`execution/solidworks/SolidPilotBridge`](execution/solidworks/SolidPilotBridge). Nothing above it changed — the adapter, the compiler and the IR round trip still speak the same four REST endpoints on `http://localhost:5000`; the add-in simply serves them from inside the `sldworks.exe` process. This is the largest architectural change of the project, so here is what it is, why it was made, and what it costs.
+
+### Why
+
+- **Stability.** On SolidWorks 2026 SP4.0 the out-of-process execution layer crashed SolidWorks on two out of two runs of a plain *new part → sketch → four lines* sequence (identical stack, entirely inside SolidWorks' own idle UI code). The same sequence through the in-process host ran 20 times without a crash, and the host has since served thousands of calls through the live suites. The reading: an out-of-process COM call is serviced *inside* SolidWorks' idle processing and cuts into its UI work, whereas an in-process call is posted to the UI thread and waits for that work to drain, so it never interleaves. The wait is the price (the first `create_sketch` of a new document takes 2–5 s instead of 0.4 s); the stability is the gain.
+- **Control.** The tools are typed C# against the full API with no marshalling: entities are selected as objects instead of by view-dependent pick, every definition is read back after it is written, and operations that were awkward from outside become routine (see [Sheet-metal control](#sheet-metal-control-through-the-typed-api)). Chatty read traversals are about 200× cheaper (≈3 µs against ≈0.6 ms per API call); work SolidWorks itself performs costs the same on both sides, so speed is a side effect, not the reason.
+- **A place for a safety net.** Living inside the session makes a gate possible: refuse calls while a modal dialog is open, snapshot unsaved work before anything destructive, an on-screen STOP, crash forensics (below).
+- **Honest costs.** Tool exceptions now run inside the user's SolidWorks session. A change to the add-in *shell* needs a SolidWorks restart (the DLL is locked while loaded) — only the *tools* reload live. The add-in is base-class-library only, because SolidWorks loads it into its own AppDomain, where third-party package versions clash.
+
+The measurements behind every one of these statements, including the probes that decided it, are in [DESIGN-NOTES.txt](execution/solidworks/SolidPilotBridge/DESIGN-NOTES.txt).
+
+### How it is built
+
+| Part | What it is | Changing it |
+|---|---|---|
+| **Shell** — `SolidPilotBridge.dll` | x64, .NET Framework 4.5.2, BCL-only. The add-in lifecycle; `UiThread` (runs work on SolidWorks' UI thread); `ToolGate` (admission control); the REST façade; a named pipe; the dialog watcher; snapshots; the task pane; an in-process C# script runner. | Needs SolidWorks closed. Small and deliberately stable. |
+| **Tools** — `SolidPilotBridge.Tools.dll` | .NET Framework 4.8. `ToolsHost` (JSON request handling, byte-compatible with the standalone exe) plus the **same `Services/*` source files the exe compiles** — linked, not copied — so both hosts run identical tool logic. | Hot reload: loaded from bytes (the file never locks) and swapped with `reload_tools`. `state_version` and the idempotency memory survive the swap. No restart. |
+
+A request takes this path:
+
+```
+AI client ─MCP─▶ adapter ─POST /api/tool/execute─▶ REST façade   (localhost only: refuses a browser Origin, a foreign Host, a non-JSON POST)
+                                                       │
+                                                       ▼
+                                                   ToolGate      pre-flight: modal dialog open? paused? UI thread answering?
+                                                       │         snapshot the dirty document · note the call as "in flight"
+                                                       ▼
+                                 SolidWorks UI thread ─▶ ToolsHost ─▶ SolidWorksService ─▶ SolidWorks API
+                                                       │
+                                 reply: COMPLETED | FAILED | DUPLICATE  (+ state_version, result geometry)
+```
+
+One call runs at a time. The REST contract, the JSON shapes, the strict `state_version` check and the `operationId` idempotency ledger (see [CONTRIBUTING.md](CONTRIBUTING.md)) are identical for both hosts; `tests/inproc-parity.ps1` replays one scripted session against both and diffs the replies.
+
+### The safety gate
+
+Because the tools share a process with the user's work, nothing runs blindly. A client sees these refusals:
+
+| Code | Meaning |
+|---|---|
+| `DIALOG_BLOCKING` | A modal dialog is open in SolidWorks. The call is refused instead of hanging; answer the dialog (by hand, or `dialog_respond` on the pipe) and retry. |
+| `SW_BUSY` | The UI thread did not answer within 20 s (`SOLIDPILOT_UI_WAIT_SEC`), or another call held the gate for longer than the call timeout. |
+| `STA_TIMEOUT` | One call ran longer than the call timeout (120 s, `SWMCP_STA_TIMEOUT_SEC`). |
+| `USER_PAUSED` | The user pressed **STOP** in the task pane; the next call is refused until **Resume**. (STOP cannot interrupt a call SolidWorks is already executing.) |
+
+- **Task pane "P"** in SolidWorks' Task Pane: the gate state (idle · running *tool* · PAUSED · dialog open), STOP / Resume, *Snapshot now*, *Folder*, and a live activity log of every call (tool, result, time). Disable with `SOLIDPILOT_PANE=0`.
+- **Automatic snapshots.** Before a call that can change or destroy work, a document with unsaved changes is saved as a silent copy (`SaveAs3` with the *copy* option: the document keeps its name, path and modified state) into `%LOCALAPPDATA%\SolidPilot\snapshots`, at most once per document per 120 s, pruned to the latest eight per document (40 files and 3 days overall). The analysis, export, save, open and document-switch tools skip it. Cost, measured: every copy leaves about 16 Windows handles in SolidWorks that are not released later — negligible for a working session, but switch the policy off (`SOLIDPILOT_SNAPSHOT_SEC=0`, or `snapshot_policy off` on the pipe) for loops that open hundreds of documents.
+- **Crash forensics.** The request being executed is written to `%LOCALAPPDATA%\SolidPilot\inflight.txt` before the call and removed after it. If SolidWorks dies mid-call, the next start reports exactly which call it was (in `/health` and in `bridge.log`).
+- **Localhost only.** The façade binds to `localhost`. A browser must never be able to drive CAD, so a request carrying an `Origin` header (CSRF), a foreign `Host` header (DNS rebinding) or a non-JSON content type on POST is refused.
+
+### The development loop, the pipe and the script runner
+
+```
+powershell -File execution\solidworks\SolidPilotBridge\deploy-bridge.ps1 -ToolsOnly          # rebuild the tools only (SolidWorks may be running)
+powershell -File execution\solidworks\SolidPilotBridge\bridge-ping.ps1 -Command reload_tools  # swap them in: generation +1, nothing else changes
+```
+
+Besides REST, the add-in serves a per-user named pipe, `\\.\pipe\SolidPilotBridge` (one command per line, one reply line): `ping`, `state`, `activeDoc`, `dialogs`, `dialog_respond <button>`, `selection`, `events`, `log`, `windows`, `post_click`, `tools_info`, `reload_tools`, `tool <json>`, `pause`, `resume`, `activity`, `gate_timeout`, `snapshots`, `snapshot_now`, `snapshot_policy <seconds|off>`, and **`run_cs <file.cs>`** — compile a C# snippet *inside* SolidWorks and run it against the live API, with no build and no restart. The [`probes/`](execution/solidworks/SolidPilotBridge/probes) folder holds about fifty such probes: the research behind every API fact in [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt). `tests/tool-call.ps1` calls any tool from PowerShell (`tool-call.ps1 feature_data '{"action":"list"}'`).
+
+### Configuration
+
+Adapter (`adapters/claude/.env` or the environment):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `EXECUTION_MODE` | `inproc` | `inproc`: the tools run in the SolidWorks add-in. `exe`: the legacy standalone host, spawned on demand. |
+| `EXECUTION_BASE_URL` | `http://localhost:5000` | Where the REST façade listens. |
+| `EXECUTION_LAUNCH_SOLIDWORKS` | `1` | Let `ensure_ready` start SolidWorks when it is closed (`0` forbids it). |
+| `SOLIDWORKS_EXE` | discovered | Override the SolidWorks executable (default: the COM registration of `SldWorks.Application`). |
+| `SOLIDWORKS_START_TIMEOUT` / `ADDIN_WAIT_TIMEOUT` | 300 s / 30 s | How long to wait for the add-in's server after a cold start / when SolidWorks was already running. |
+
+Add-in (environment variables, set before SolidWorks starts): `SOLIDPILOT_PORT` (or the DWORD `HKCU\Software\SolidPilot\Bridge\HttpPort`; default 5000), `SOLIDPILOT_HTTP=0` (no façade), `SOLIDPILOT_PANE=0` (no task pane), `SOLIDPILOT_UI_WAIT_SEC` (20), `SWMCP_STA_TIMEOUT_SEC` (120), `SOLIDPILOT_SNAPSHOT_SEC` (120; `0` = off), `SOLIDPILOT_TOOLS` (folder to load the tools from).
+
+### The legacy host
+
+`SolidworksExecution.exe` — the original out-of-process execution layer — is still built from the same source and still works as a **fallback** (`EXECUTION_MODE=exe`; `SOLIDWORKS_EXEC_PORT` runs it beside the add-in on another port, which is how the parity test compares them). It is not the recommended host: see *Stability* above.
+
+### Live test suites
+
+The add-in made it practical to test CAD behaviour automatically. All of these need SolidWorks running with the bridge, and nothing else open; each is a PowerShell script under [`execution/solidworks/SolidPilotBridge/tests`](execution/solidworks/SolidPilotBridge/tests) that prints PASS / FAIL per case:
+
+| Suite | What it checks |
+|---|---|
+| `bridge-tests.ps1` | The pipe protocol, dialog handling, the script runner, and the gate against a real modal dialog (`DIALOG_BLOCKING`, recovery). |
+| `inproc-stress.ps1` | REST security (Origin / Host / content type), parallel calls, pause / resume, call timeouts, crash forensics, events, tools hot reload (needs a Debug tools build for its fault-injection hooks). |
+| `typed-control-tests.ps1` · `forming-tests.ps1` · `parametric-tests.ps1` | The sheet-metal tools against geometry and numbers, not against `COMPLETED`: flat blanks, K-factor, corners, hems, mitre flanges, units, equations, the NEMA cabinet and a lid as a second body. |
+| `doc-soak.ps1` | Does a long agent session leak SolidWorks resources? (Handles, memory, GDI and USER objects per build cycle.) |
+| `e2e_adapter.py` | The real Python adapter and compiler against the façade: IR build → analyze → save → rebuild → `compare_parts`. |
+| `inproc-parity.ps1` · `shell-harness.ps1` · `exec-layer-tests.ps1` | Parity between the two hosts; hosting the shell stack out-of-process to test it before a SolidWorks restart; the safety executor's unit tests (offline). |
+
+---
+
+## Sheet-metal control through the typed API
+
+Running in-process turns sheet metal from "drive the wizard and hope" into something that can be specified, read back and tested. Every sheet-metal tool follows the same four rules:
+
+- **Objects, not picks.** Edges and faces are selected as objects, by the stable index `analyze_model` prints or by geometry — never by a screen point, because a point pick goes *through the current view* (measured: the wrong edge, or a miss, depending on the view).
+- **Write, then read back.** `ModifyDefinition` returns `True` even when SolidWorks ignored the value, so every write is verified against a fresh read and reported as `applied` / `ignored` / `unknown` / `rejected`.
+- **The numbers come from SolidWorks, not from a prediction.** The flat blank size, the cutting length and the bend count are read live from the cut-list item without unsuppressing the flat pattern, and the flat DXF is written in the document's own unit.
+- **Parametric from the first call.** `document_units`, `equations` and `sketch_center_rectangle` make a part variable-driven from tools alone; every dimension that matters can be tied to a named variable.
+
+Covered today: base, edge and **mitre flanges** (one wall, or a multi-segment wall + rim + return-lip profile that is itself fully dimensioned), hems (open, closed, tear-drop, rolled), break corners, closed corners, global and per-bend K-factor, auto relief, flat-pattern options, a direct flat DXF, and typed read/write of *any* feature's definition (`feature_data`).
+
+**Worked proof — a NEMA cabinet body from tools alone.** A 12 × 18 in plate and **one** mitre flange along its four edges (wall + rim + return lip), eight variables (`BoxWidth`, `BoxHeight`, `SheetThickness`, `InsideRadius`, `KFactor`, `WallHeight`, `LipLength`, `ReturnLip`) driving it. Against the same part modelled by hand in SolidWorks:
+
+| | built by tools | modelled by hand |
+|---|---|---|
+| flat blank (in) | 27.931 × 21.931 | 27.931 × 21.931 |
+| outer cutting length (in) | 95.821 | 95.821 |
+| bends | 12 | 12 |
+| folded size (in) | 12 × 18 × 4.56 | 12 × 18 × 4.56 |
+
+It re-sizes through its variables (wall 5 in → 5.56 in deep and a blank 2 in larger; 14 gauge and back restores the exact numbers), the flat DXF is written in inches, and a lid added as a second sheet-metal body in the same part leaves the cabinet unchanged (`tests/parametric-tests.ps1`).
+
+**What the API itself cannot do** — measured, and identical in and out of process: create a *Convert to Sheet Metal* feature, write a Convert feature's bend list, set a gauge-table path, or create a Move Face. Those need the user interface (Convert's PropertyManager is driven by posted mouse messages and UI Automation) and are on the [Roadmap](#roadmap). The evidence for everything on this page: [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt).
+
+---
+
+## Reports, and modeling low LOD before DFM
+
+Two habits make the system useful on real, ambiguous input — a vendor PDF, a photo, a customer's crude model, or a one-line prompt.
+
+**1. Perceive → report → question → only then model.** Before any geometry is created from source media, the media is *measured* (a vector census of a PDF or DXF, a scale audit — a datasheet often draws a generic envelope with true-scale details) and every claim about the part goes into an **evidence ledger**: one line per claim, ranked by confidence, each with an evidence class (A: dimension text or table · B: measured vector geometry · C: visual inference · D: convention or assumption). The ledger becomes a **report** — an HTML page (the source page with numbered, confidence-coloured overlays, the ranked ledger, the questions), a plain-text `*.review.md` that *another agent or a human reviewer* can read and answer, and an `*.answers.json` template. At least one question — chosen by impact × (1 − confidence), and always including the hypothesis the agent does *not* hold — is asked and answered before the first modeling call. After the build, a **closure board** puts the model and the source side by side in the same projections, with the measured checks (flat blank, bend lines, hole positions, volume); anything that disagrees goes back into the ledger. The evidence comes from tools in this repository — `analyze_drawing`, `analyze_model`, `save_analysis`, `compare_parts`, the flat-pattern cut list — and the report generator and process playbooks are agent skills maintained alongside the project.
+
+**2. Low LOD first, DFM second.** The first model of a part is deliberately crude: a **base shape at BIM LOD ≤ 100** — masses and envelope only, no thickness, no bends, no hardware, on the Front plane, from a fully defined origin-centred sketch — shown as a picture in the report *before* the question round. It exposes misreadings while they are still cheap: which way a return lip points, which face is open, which dimension is the depth. Once it is agreed, the same base shape becomes the **first feature of the sheet-metal part**: it is thickened and given its bends (a surface body offset by one thickness and converted; a mitre flange along the base's edges; or folded from a flat pattern), then taken through the design-for-manufacture steps — equations for thickness, inside radius, K-factor and wall height, corner treatment, the flat pattern, the DXF in the shop's unit, the cut list. "LOD" here means the *source's* level of detail — a crude customer solid is around LOD 100–200, a fabrication drawing is far more — not rendering resolution.
+
+---
+
 ## Tool List
 
-The system currently exposes **54 tools** for *doing* and **13 MCP resources** for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `submit_feature_graph`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. All lengths are in meters (SolidWorks internal units).
+The system currently exposes **57 tools** for *doing* and **13 MCP resources** for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `submit_feature_graph`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. All lengths are in meters (SolidWorks internal units).
 
 The **resources** carry the rule set and the contracts, not behaviour: `recipe://usage/index` plus one static `recipe://usage/<section>` per rule section, and `schema://feature-graph` + `schema://analysis-artifact`. The split is deliberate — a tool's description is paid on every single turn whether or not it is used, while a resource body costs only when read, so near-static reference material belongs on the resource side.
 
@@ -134,9 +275,14 @@ The **resources** carry the rule set and the contracts, not behaviour: `recipe:/
 - `sheet_metal_corners` — Closed Corner features through the API (no UI), configured and read back.
 - `sheet_metal_hem` — closed / open / tear-drop / rolled hems on free edges (one feature for many edges), definition read back.
 - `sheet_metal_break_corner` — fillet or chamfer the corners of flange walls (Break-Corner).
-- `sheet_metal_miter_flange` — ONE mitre flange along an edge chain; a closed loop gives weld-tight mitred corners, and the profile sketch is generated for you.
-- `flat_pattern_control` — flat-pattern options, the flat blank's size, and a direct, non-interactive flat DXF export.
+- `sheet_metal_miter_flange` — ONE mitre flange along an edge chain; a closed loop gives weld-tight mitred corners, and the profile sketch is generated for you — a single wall (`height` + `angle`) or a multi-segment `profile_points` polyline (wall + rim + return lip) that is fully dimensioned so equations can drive it.
+- `flat_pattern_control` — flat-pattern options, the flat blank's size, and a direct, non-interactive flat DXF export (in the document's unit).
 - `feature_data` — typed read/write of any feature's full definition (the SolidWorks `*FeatureData` interface) with write-verify: it reports which values SolidWorks actually kept.
+
+### Parametric building blocks
+- `document_units` — read or set the document's length unit (mm / cm / m / in / ft) and displayed decimals (2 for metric, 3 for inches by default), read back.
+- `equations` — Equations and Global Variables: set variables, link dimensions (`"D1@Sketch1"` = a variable), raw equations and delete; an existing name is updated rather than duplicated, and every refused equation is named in the reply. Values are listed in the document's unit.
+- `sketch_center_rectangle` — a centre rectangle on a plane that is **fully defined** (width `D1`, height `D2`, centre tied to the origin), ready to be driven by `equations`. Sketch inference is switched off while it draws and the size the lines really measure is returned, so it is exact even beside existing geometry.
 
 ### Editing
 - `modify_dimension` — changes the value of a named dimension (the basis for variants).
@@ -189,20 +335,49 @@ The drawing tools were added after the initial part-modeling set and are now a s
 ## Installation and Running
 
 ### Requirements
-- Windows and **SolidWorks 2026**.
-- **.NET Framework 4.8** and MSBuild for the execution layer (ships with Visual Studio 2022).
+- Windows and **SolidWorks 2026** (developed against SP4.0).
+- **.NET Framework 4.8** developer pack and MSBuild for the execution layer (ships with Visual Studio 2022). If the 4.8 targeting pack is not installed, `deploy-bridge.ps1` uses the `Microsoft.NETFramework.ReferenceAssemblies.net48` NuGet package under `execution/solidworks/packages` when present.
+- **Administrator rights, once**, to register the add-in under `HKLM` (see below).
 - **Python 3.x** and the official **MCP Python SDK v2** (`mcp>=2.0.0`, protocol `2026-07-28`) for the
   adapter (Python dependencies are installed via `requirements.txt`).
 - An MCP-capable AI client (e.g. Claude Desktop; OpenClaw, OpenAI-based agents, and local LLMs are also targeted).
 
-### Execution layer (C#)
-Build the solution:
+### Execution layer: the SolidPilot Bridge add-in (default)
+
+The tools run inside SolidWorks. Set it up once:
+
+**1. Build** the shell and the tools (SolidWorks must be closed: the shell DLL is locked while it is loaded):
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File execution\solidworks\SolidPilotBridge\deploy-bridge.ps1
+```
+
+**2. Register** the add-in from an **elevated** PowerShell. SolidWorks lists add-ins from `HKLM`; a per-user (`HKCU`-only) registration is not shown under *Tools ▸ Add-Ins*:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File execution\solidworks\SolidPilotBridge\register-bridge.ps1 -Hive HKLM
+```
+
+(`-Unregister` removes the entries. The *load at start-up* flag is always per user.)
+
+**3. Start SolidWorks** — *SolidPilot Bridge* loads with it (tick it under *Tools ▸ Add-Ins* if it does not) — and check that the add-in answers:
+
+```
+powershell -NoProfile -File execution\solidworks\SolidPilotBridge\bridge-ping.ps1 -Command ping     # pong v0.8
+Invoke-RestMethod http://localhost:5000/health
+```
+
+From here the adapter does the rest: `ensure_ready` starts SolidWorks when it is closed and waits for the add-in's server (see [Configuration](#configuration)). After a change to the **tools**, rebuild with `deploy-bridge.ps1 -ToolsOnly` and send `bridge-ping.ps1 -Command reload_tools` — no restart. After a change to the **shell**, close SolidWorks and run `deploy-bridge.ps1` again.
+
+### Execution layer: standalone exe (fallback)
+
+The original out-of-process host is still built from the same source. Build the solution:
 
 ```
 & "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" execution\solidworks\SolidworksExecution.sln /t:Build /p:Configuration=Debug
 ```
 
-Run the server (headless, `http://localhost:5000`):
+and use it with `EXECUTION_MODE=exe` in the adapter's environment (the adapter then spawns it on demand), or start it by hand (headless, `http://localhost:5000`; give it another port with `SOLIDWORKS_EXEC_PORT` when the add-in is running):
 
 ```
 Start-Process execution\solidworks\SolidworksExecution\bin\Debug\SolidworksExecution.exe -WindowStyle Hidden
@@ -216,7 +391,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-The adapter connects to the execution layer at `EXECUTION_BASE_URL` (default `http://localhost:5000`; override via `.env`).
+The adapter connects to the execution layer at `EXECUTION_BASE_URL` (default `http://localhost:5000`; override via `.env`). In the default `EXECUTION_MODE=inproc` it does not spawn any server — it only makes sure SolidWorks is running with the add-in loaded. The full list of variables is under [Configuration](#configuration).
 
 ### Registering with an AI client (How to Install)
 
@@ -246,9 +421,13 @@ Update the path to match your own system.
 
 ## Project Status
 
-SolidPilot is a **working prototype / early alpha**. The low-level tools have been verified end-to-end against live SolidWorks; all COM calls are serialized on a single dedicated STA thread.
+SolidPilot is a **working prototype / early alpha**. The low-level tools have been verified end-to-end against live SolidWorks; in the default in-process host every call runs, one at a time, on SolidWorks' own UI thread behind the safety gate.
+
+**Execution architecture:** the biggest recent change. The execution layer moved from a separate process into SolidWorks itself — the **SolidPilot Bridge** add-in (see [In-process execution](#in-process-execution-the-solidpilot-bridge-add-in)). It is the default host (shell v0.8): stable where the out-of-process host crashed SolidWorks, typed and read-back-verified, hot-reloadable without a restart, and wrapped in a safety gate with automatic snapshots, a task pane (STOP / Resume / activity log) and crash forensics. The REST contract did not change, so the adapter, the compiler and the IR round trip run unmodified against either host, and the standalone exe remains as a fallback. Open points: the add-in is registered from the build output (there is no installer yet), and each automatic snapshot costs ~16 Windows handles inside SolidWorks (switchable).
 
 **Parts:** the part-modeling surface is the most mature — sketches, extrude/revolve/sweep/loft, fillets/chamfers, patterns, sheet metal, reference geometry, plus editing (`modify_dimension`, `edit_feature`) and rich analysis. Initially only the tools needed for part creation existed.
+
+**Sheet metal:** the most actively developed area, and the first to benefit from the in-process host — typed control of flanges (including a multi-segment **mitre flange** profile), hems, corners, K-factor, relief, the flat pattern and a direct flat DXF, with parametric building blocks (document units, equations, a fully defined master sketch) and live regression suites that check geometry and numbers rather than `COMPLETED` (see [Sheet-metal control](#sheet-metal-control-through-the-typed-api)). In progress: fold-from-flat, automated *Convert to Sheet Metal*, and the remaining sheet-metal features (see the [Roadmap](#roadmap)).
 
 **Technical drawing:** added later and now a real (if still maturing) capability — multi-view drawings, section views, model-item auto-dimensioning, center marks, hole callouts, sheet-metal flat-pattern views, and a drawing reader. **Model → drawing** has been demonstrated on real production parts (a five-view dimensioned drawing incl. two orthogonal section views placed from analysis alone). Known limitation there: the auto-dimension pass is drafting-blind (it can omit or mis-place dimensions and dimension hidden edges) — a smarter dimensioning layer is on the roadmap.
 
@@ -262,11 +441,12 @@ The open problem — and the project's real research risk — is a **durable ref
 
 > **Two IR doors, one compiler.** The *reverse* door is `rebuild_from_ir` (reproduce an existing part from its artifact). The *forward* door is `submit_feature_graph` (build from design intent, with no original to copy) — now **live and gate-free**, and proven on real geometry: swept solids matching πr²·L to six digits, composed pattern grids, elliptic prisms, and sheet-metal flanges. Both doors execute through the same `pycompiler`, so every lesson from one improves the other. Note that having the forward door is *not* the same as collapsing the low-level surface beneath it — the 40-odd low-level tools still stand, and retiring them waits on the reference resolver below.
 
-**Testing:** four automated suites run fully offline (no SolidWorks needed) and in CI on every push — a **tool contract test** (`adapters/claude/tests/test_schema_contract.py`) that fails on any tool/parameter drift between the adapter (`server.py`) and the execution contract (`tool-schemas.json`); an **IR contract test** (`compiler/solidworks/pycompiler/tests/test_ir_schema_contract.py`) that fails on any vocabulary drift between the IR schema — which doubles as the capability registry — and the validator that enforces it, in both directions; the **compiler suite** (`compiler/solidworks/pycompiler/tests/`) covering IR validation, lowering, and reference resolution against a fake execution port; and a **drawing-reader gate** (`cad-planner/drawing/tests/`) that diffs the draw-dialect vocabulary both ways and re-chains frozen DXF fixtures from raw primitives, validating the IR it emits against the compiler's own validator so the reader cannot invent vocabulary the compiler could not build. Behavioral verification of the CAD operations themselves is manual against live SolidWorks, by design.
+**Testing:** four automated suites run fully offline (no SolidWorks needed) and in CI on every push — a **tool contract test** (`adapters/claude/tests/test_schema_contract.py`) that fails on any tool/parameter drift between the adapter (`server.py`) and the execution contract (`tool-schemas.json`); an **IR contract test** (`compiler/solidworks/pycompiler/tests/test_ir_schema_contract.py`) that fails on any vocabulary drift between the IR schema — which doubles as the capability registry — and the validator that enforces it, in both directions; the **compiler suite** (`compiler/solidworks/pycompiler/tests/`) covering IR validation, lowering, and reference resolution against a fake execution port; and a **drawing-reader gate** (`cad-planner/drawing/tests/`) that diffs the draw-dialect vocabulary both ways and re-chains frozen DXF fixtures from raw primitives, validating the IR it emits against the compiler's own validator so the reader cannot invent vocabulary the compiler could not build. Behavioural verification of the CAD operations themselves needs a live SolidWorks and runs there: the in-process host made it practical to automate, so the sheet-metal, gate, stress and soak suites under `execution/solidworks/SolidPilotBridge/tests` (see [Live test suites](#live-test-suites)) assert geometry, numbers and refusals — not just `COMPLETED` — and drawing tools are still checked case by case against the exported PDF.
 
 Notes:
 - The Python MCP adapter does not hot-reload while running; after editing `server.py`, the MCP server must be reconnected.
-- Because SolidPilot drives a live SolidWorks GUI session, the analysis tools may occasionally wait for a click in SolidWorks before proceeding, and after a very long analysis the MCP tools can start returning errors (a client-side limit); in either case, tell the assistant to retry and it will continue.
+- Because SolidPilot drives a live SolidWorks GUI session, a modal dialog in SolidWorks can stand in the way. The gate no longer lets a call hang on it: it answers `DIALOG_BLOCKING`; dismiss the dialog and the assistant retries. After a very long analysis the MCP tools can also start returning errors (a client-side limit); in either case, tell the assistant to retry and it will continue.
+- The add-in is the user's session: a crash inside a tool is a SolidWorks crash. The gate's snapshots (`%LOCALAPPDATA%\SolidPilot\snapshots`) and the in-flight marker (`inflight.txt`) exist for that day — see [The safety gate](#the-safety-gate).
 
 ---
 
@@ -281,6 +461,7 @@ The project is under active development. The Feature Graph IR and deterministic 
 
 Coming soon in existing areas:
 
+- **Sheet metal (in progress):** fold-from-flat (a flat pattern drawn as a base flange and folded with sketched bends, with unit tests); *Convert to Sheet Metal* automated in-process — the API cannot create it, so its PropertyManager is driven through the add-in — and the cabinet with differing rim widths as the end-to-end proof; and the remaining features (jog, gusset, tab and slot, swept flange, corner trim, rip, lofted bend), each probed against the live API and covered by a suite before it is called done.
 - **Technical drawing:** the core tools exist; remaining work is a drafting-aware dimensioning layer (deterministic section planning, correct dimension placement), GD&T / datums, title blocks, detail views, and a bill of materials (BOM).
 
 ---

@@ -1,6 +1,6 @@
 # SolidPilot Bridge - live test harness (layer 2-4 of the stress plan). Requires SolidWorks running with the bridge loaded and NO modal dialog open.
-# Usage:  powershell -NoProfile -ExecutionPolicy Bypass -File bridge-tests.ps1 [-Group protocol|dialogs|scripts|exec|all] [-BaseUrl http://localhost:5001] [-Json out.json]
-# -BaseUrl: the REST host the 'exec' group talks to - the out-of-process execution layer (default :5000) or the in-process façade (:5001); both must answer the same way.
+# Usage:  powershell -NoProfile -ExecutionPolicy Bypass -File bridge-tests.ps1 [-Group protocol|dialogs|scripts|exec|all] [-BaseUrl http://localhost:5000] [-Json out.json]
+# -BaseUrl: the REST host the 'exec' group talks to - the in-process add-in (default :5000) or the legacy out-of-process exe (SOLIDWORKS_EXEC_PORT, e.g. :5001); both must answer the same way.
 # Each test prints PASS/FAIL with a reason; exit code = number of failures. The harness never leaves a dialog open (it answers its own dialogs).
 param([ValidateSet('protocol', 'dialogs', 'scripts', 'exec', 'all')][string]$Group = 'all', [string]$Json = '', [string]$BaseUrl = 'http://localhost:5000')
 $ErrorActionPreference = 'Stop'

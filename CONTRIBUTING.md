@@ -14,7 +14,7 @@ The system has four layers, and preserving these boundaries is the foundation of
 |---|---|---|
 | `cad-planner` | `cad-planner/` | Intent -> CAD-neutral Feature Graph IR. Does not touch COM, does not emit raw tool calls. |
 | `compiler/solidworks` | `compiler/solidworks/` | IR -> tool calls + reference resolution. Deterministic; contains no LLM and no MCP. |
-| `execution/solidworks` | `execution/solidworks/` | The only layer that touches SolidWorks COM (C#, .NET 4.8). |
+| `execution/solidworks` | `execution/solidworks/` | The only layer that touches SolidWorks COM (C#, .NET Framework). Runs **inside SolidWorks** as the SolidPilot Bridge add-in (`SolidPilotBridge/`, default); the same tool source also builds as a standalone exe (`SolidworksExecution/`, fallback). |
 | `adapters/claude` | `adapters/claude/` | MCP protocol bridge (Python, MCP SDK v2). |
 
 Rules that must never be violated:
@@ -23,6 +23,8 @@ Rules that must never be violated:
 - **MCP is the top boundary** (between the client and the IR), not an internal transport. The compiler reaches the execution layer over plain REST.
 - The IR is **CAD-neutral**; SolidWorks-specific details live only in the compiler and execution layers.
 - The execution and planner layers have no knowledge of which client is calling them.
+- **One tool source, two hosts.** `SolidworksExecution/Services/*` and `Models/*` are compiled into the standalone exe **and** linked (not copied) into the add-in's `SolidPilotBridge.Tools` assembly. Tool logic is never host-specific; only the thin host around it differs (REST controller + STA executor in the exe, `ToolsHost` + `ToolGate` in the add-in). The two hosts serve the same REST contract.
+- The add-in **shell** (`SolidPilotBridge.dll`) is BCL-only and deliberately small: SolidWorks loads it into its own AppDomain, so third-party packages clash, and every shell change needs a SolidWorks restart. Put new behaviour in the **tools** assembly, which hot-reloads.
 - Adding a new CAD backend means adding a new compiler and execution layer; the IR and `cad-planner` stay unchanged.
 - The adapter layer is provider-specific. Supporting a new AI client (OpenClaw, OpenAI, a local LLM, etc.) means only adding a new adapter that reuses the shared bridge core.
 
@@ -37,20 +39,37 @@ Rules that must never be violated:
 
 ### Building and running the execution layer
 
-Build:
+**In-process (default)** — the tools run inside SolidWorks as the SolidPilot Bridge add-in. One-time setup (SolidWorks closed; see the README's *Installation* for the details):
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File execution\solidworks\SolidPilotBridge\deploy-bridge.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File execution\solidworks\SolidPilotBridge\register-bridge.ps1 -Hive HKLM     # elevated, once
+```
+
+The everyday loop for a tool change needs **no SolidWorks restart**:
+
+```
+powershell -File execution\solidworks\SolidPilotBridge\deploy-bridge.ps1 -ToolsOnly            # rebuild the tools assembly
+powershell -File execution\solidworks\SolidPilotBridge\bridge-ping.ps1 -Command reload_tools   # swap it in (generation +1; state_version and idempotency kept)
+powershell -File execution\solidworks\SolidPilotBridge\tests\tool-call.ps1 feature_data '{"action":"list"}'   # call any tool by hand
+```
+
+To explore an API question before writing a tool, use the in-process script runner: `bridge-ping.ps1 -Command "run_cs <file.cs>"` (or `probes\run-probe.ps1 <file.cs> [arg]`) compiles a C# snippet inside SolidWorks and runs it against the live API. Add-in diagnostics are in `%LOCALAPPDATA%\SolidPilot\bridge.log`; the safety net's snapshots and the in-flight marker are in the same folder.
+
+**Standalone exe (fallback)** — the original out-of-process host. Build:
 
 ```
 & "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" execution\solidworks\SolidworksExecution.sln /t:Build /p:Configuration=Debug
 ```
 
-Restart (headless, `http://localhost:5000`):
+Restart (headless, `http://localhost:5000`; use `SOLIDWORKS_EXEC_PORT` for another port when the add-in is running):
 
 ```
 Get-Process SolidworksExecution -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Process execution\solidworks\SolidworksExecution\bin\Debug\SolidworksExecution.exe -WindowStyle Hidden
 ```
 
-The server runs headless and must be running while SolidWorks is open (the COM connection is established lazily, on the first tool call). C#-side errors and per-request traces are written to `execution\solidworks\SolidworksExecution\bin\Debug\execution.log`.
+The exe runs headless and must be running while SolidWorks is open (the COM connection is established lazily, on the first tool call), and the adapter must be started with `EXECUTION_MODE=exe`. C#-side errors and per-request traces are written to `execution\solidworks\SolidworksExecution\bin\Debug\execution.log`. Never commit the Debug binaries a local build modifies under `SolidworksExecution/bin/Debug`.
 
 ### Running the adapter
 
@@ -69,9 +88,9 @@ python server.py
 ### A new low-level tool (execution surface)
 
 1. **Contract** — add the tool to `execution/solidworks/contracts/tool-schemas.json`.
-2. **Execution** — add a `case "tool_name":` in `ToolController.cs` and implement it in the matching `SolidWorksService.<Family>.cs` **partial class** under `Services/` (one class split by tool family: core / Sketch / Features / SheetMetal / Drawing / Analyze / Assembly; a new file also needs a `<Compile Include>` entry in the csproj). **Verify any SolidWorks COM API signature by reflecting the interop assembly first — never invent a method name or argument list.** The real API frequently differs from what looks plausible (for example, the model-item insertion API lives on `IDrawingDoc`, not `IView`; `GetLines3` returns empty while `GetPolylines7` is the working geometry getter). Decode unknown return shapes empirically against a live document before writing the parser.
+2. **Execution** — add a `case "tool_name":` in `Services/ToolDispatcher.cs` (shared by both hosts) and implement it in the matching `SolidWorksService.<Family>.cs` **partial class** under `Services/` (one class split by tool family: core / Sketch / Features / SheetMetal / Drawing / Analyze / Assembly; a new file is linked into the add-in's tools assembly automatically, but needs a `<Compile Include>` entry in `SolidworksExecution.csproj` for the exe fallback). **Verify any SolidWorks COM API signature by reflecting the interop assembly first — never invent a method name or argument list.** The real API frequently differs from what looks plausible (for example, the model-item insertion API lives on `IDrawingDoc`, not `IView`; `GetLines3` returns empty while `GetPolylines7` is the working geometry getter). Decode unknown return shapes empirically against a live document before writing the parser.
 3. **Adapter** — register the MCP tool in `adapters/claude/server.py`. Model-facing guidance lives here (the client never sees `tool-schemas.json`): use `Literal` enums for discriminators, Pydantic `Field` constraints for units and ranges, and real required parameters.
-4. **Verify** — run the contract test (see below), then validate against live SolidWorks.
+4. **Verify** — run the contract test (see below), hot-reload the tools (`deploy-bridge.ps1 -ToolsOnly`, `bridge-ping.ps1 -Command reload_tools`) and validate against live SolidWorks. A tool is done when a case in a live suite (`execution/solidworks/SolidPilotBridge/tests`) asserts its *result* — geometry, numbers, the refusals — and not merely `COMPLETED`: `ModifyDefinition` reports success for values SolidWorks ignored, and sketch inference (on by default) silently snapped a rectangle's corners to nearby model edges. Test a sketch- or selection-based tool in a part that **already has geometry**, not only in an empty one.
 
 ### A new feature (IR level — the strategic direction)
 
@@ -105,7 +124,7 @@ python server.py
 
   or run it via `pytest`.
 
-- **Live testing (manual by design):** tools are verified against live SolidWorks, with the GUI open, case by case. A cohesive batch of tools is chosen together and tested as a batch. When a tool fails, inspect `execution.log` and report the expected result, the API response, and a hypothesis. For drawing tools, the exported **PDF is the ground truth** — some interop counters under-report (e.g. inserted annotations / center marks), so confirm a drawing change by exporting and reading the PDF rather than trusting an in-band count alone.
+- **Live testing:** tools are verified against live SolidWorks, with the GUI open. The in-process host made this automatable: the PowerShell suites under `execution/solidworks/SolidPilotBridge/tests` (bridge, stress, soak, sheet-metal typed-control / forming / parametric, an end-to-end adapter round trip) run against the add-in on `localhost:5000` and need SolidWorks running with nothing else open — the README's *Live test suites* table says what each one covers. Drawing tools are still checked case by case. A cohesive batch of tools is chosen together and tested as a batch. When a tool fails, inspect `execution.log` and report the expected result, the API response, and a hypothesis. For drawing tools, the exported **PDF is the ground truth** — some interop counters under-report (e.g. inserted annotations / center marks), so confirm a drawing change by exporting and reading the PDF rather than trusting an in-band count alone.
 
 - **Compiler suite:** `compiler/solidworks/pycompiler/tests/` exercises IR validation, lowering, and reference resolution against a fake execution port — fully offline.
 
