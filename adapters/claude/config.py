@@ -27,7 +27,21 @@ ENSURE_TIMEOUT = float(os.getenv("ENSURE_TIMEOUT", "120"))
 # disable the adapter's auto-start. A fixed floor makes the exception type independent of config.
 CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10"))
 
-# Auto-start of the execution server (so the user never has to launch the exe by hand).
+# --- where the tools run ------------------------------------------------------------------------
+# "inproc" (default): INSIDE SolidWorks. The SolidPilot Bridge add-in serves EXECUTION_BASE_URL from within the SolidWorks process, so there is no server for the adapter to spawn - only
+# SolidWorks to start (ensure_ready does that). The out-of-process exe is not used: on SolidWorks 2026 SP4.0 it crashed SolidWorks twice on a plain new-part sketch sequence that the in-process
+# host ran cleanly 20 times (SolidPilotBridge/DESIGN-NOTES.txt).
+# "exe": the legacy out-of-process SolidworksExecution.exe, spawned on demand (settings below). Fallback only.
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "inproc").strip().lower()
+# inproc + ensure_ready: start SolidWorks when it is closed. SOLIDWORKS_EXE overrides the discovery (the COM registration of SldWorks.Application); EXECUTION_LAUNCH_SOLIDWORKS=0 forbids it.
+LAUNCH_SOLIDWORKS = os.getenv("EXECUTION_LAUNCH_SOLIDWORKS", "1") != "0"
+SOLIDWORKS_EXE = os.getenv("SOLIDWORKS_EXE", "")
+# How long to wait for the add-in's server after the adapter started SolidWorks (cold start incl. add-ins) ...
+SOLIDWORKS_START_TIMEOUT = float(os.getenv("SOLIDWORKS_START_TIMEOUT", "300"))
+# ... and when SolidWorks was already running (the add-in may still be loading, or it is not ticked under Tools > Add-Ins).
+ADDIN_WAIT_TIMEOUT = float(os.getenv("ADDIN_WAIT_TIMEOUT", "30"))
+
+# Auto-start of the out-of-process execution server (EXECUTION_MODE=exe only).
 # Default points at the standard Debug build output, two dirs up from this adapter package
 # (adapters/claude → repo root → execution/solidworks/...). Override via .env if needed.
 _DEFAULT_EXE = os.path.normpath(

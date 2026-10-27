@@ -64,8 +64,14 @@ namespace SolidPilot.Bridge.Tools
 
             ExecLog.Write("-> " + request.Tool + " op=" + request.OperationId + " sv=" + request.StateVersion);
             ExecutionResponse response;
+#if DEBUG
+            if (request.Tool == "__test_throw_escape") throw new InvalidOperationException("test exception that escapes the host (the gate must map it to HTTP 500 and recover)");
+#endif
             try
             {
+#if DEBUG
+                if (request.Tool.StartsWith("__test_", StringComparison.Ordinal)) response = TestHook(request); else
+#endif
                 // a fresh service per request, exactly like the out-of-process controller (no instance state may leak between calls); it is handed the live ISldWorks
                 response = ToolDispatcher.Dispatch(new SolidWorksService(OperationGuard.Instance, _services.SolidWorks), request);
             }
@@ -79,6 +85,26 @@ namespace SolidPilot.Bridge.Tools
             else ExecLog.Write("<- " + request.Tool + " " + response.Status + " sv=" + response.StateVersion);
             return Reply(200, response);
         }
+
+#if DEBUG
+        // Test hooks - Debug builds only, absent from a Release build (which answers "Unknown tool"). They let the stress tests drive the gate's failure paths from outside:
+        //   __test_sleep {ms}      blocks the UI thread for that long   (STA_TIMEOUT, SW_BUSY while abandoned, recovery)
+        //   __test_throw {message} throws inside the tool                (host maps it to HTTP 500, gate stays healthy)
+        //   __test_throw_escape    throws OUT of the host                (the gate itself must map it to HTTP 500 and recover)
+        //   __test_echo {...}      returns its params in result_geometry (JSON round trip, big payloads, unicode)
+        private static ExecutionResponse TestHook(ToolRequest request)
+        {
+            var p = request.Params as JObject ?? new JObject();
+            switch (request.Tool)
+            {
+                case "__test_sleep": System.Threading.Thread.Sleep((int?)p["ms"] ?? 1000); break;
+                case "__test_throw": throw new InvalidOperationException((string)p["message"] ?? "test exception");
+                case "__test_echo": break;
+                default: return null;                      // unknown test hook -> "Unknown tool"
+            }
+            return new ExecutionResponse { OperationId = request.OperationId, Status = "COMPLETED", Verified = true, StateVersion = OperationGuard.Instance.GetCurrentStateVersion(), ResultGeometry = p };
+        }
+#endif
 
         // Same fields as the out-of-process /health, plus whatever the shell wants merged in (bridge state, generation, http info ...).
         public ToolReply Health(string extraFieldsJson)
@@ -107,7 +133,7 @@ namespace SolidPilot.Bridge.Tools
             };
             // We ARE inside SolidWorks: attached by construction, never launched, and exactly one process (the duplicate-instance problem of the out-of-process host cannot exist here).
             info["comAttached"] = true;
-            if (ensure) info["swLaunched"] = false;
+            if (ensure) { info["swLaunched"] = false; try { info["swVersion"] = _services.SolidWorks.RevisionNumber(); } catch { } }
             try { var d = _services.SolidWorks.IActiveDoc2 as IModelDoc2; info["activeDocument"] = d != null ? d.GetTitle() : null; } catch { }
             info["solidworksProcessCount"] = 1;
             info["solidworksPids"] = new JArray(Process.GetCurrentProcess().Id);

@@ -25,7 +25,8 @@ namespace SolidworksExecution
             {
                 try
                 {
-                    string baseAddress = "http://localhost:5000/";
+                    // SOLIDWORKS_EXEC_PORT lets this out-of-process host run next to the in-process one (default port 5000 = what every client expects)
+                    string baseAddress = "http://localhost:" + (Environment.GetEnvironmentVariable("SOLIDWORKS_EXEC_PORT") ?? "5000") + "/";
                     using (WebApp.Start<Startup>(url: baseAddress))
                     {
                         Console.WriteLine("SolidworksExecution server running at " + baseAddress);

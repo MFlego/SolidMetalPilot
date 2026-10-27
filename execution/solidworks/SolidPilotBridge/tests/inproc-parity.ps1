@@ -1,4 +1,4 @@
-# Parity test: the SAME scripted tool session sent to two execution hosts - the out-of-process execution layer (default http://localhost:5000) and another host that serves the same REST contract
+# Parity test: the SAME scripted tool session sent to two execution hosts - the in-process add-in (default http://localhost:5000) and the legacy out-of-process layer (SOLIDWORKS_EXEC_PORT=5001) or any other host that serves the same REST contract
 # (the in-process add-in, or tests\shell-harness.ps1) - and the responses compared after normalising what must differ (server time, process ids, absolute state_version).
 # Each run starts with open_new_part and ends by closing that part WITHOUT saving, so it is repeatable and leaves the user's documents alone (a guard refuses to close anything that is not "Part*").
 # SAFETY: this creates and closes documents in the LIVE SolidWorks session, and SolidWorks has crashed during such runs (2026-10-26, journal stack inside its own idle UI code).
@@ -6,7 +6,7 @@
 # right after a fresh SolidWorks start with nothing open.
 # NOTE (2026-10-26): the out-of-process host crashed SolidWorks 2026 SP4.0 on this very sequence, twice, at create_sketch -> add_sketch_entities on a new part (same stack both times), while the
 # in-process host ran it cleanly. So use -OnlyA against the in-process host for stability/timing runs; a two-host comparison now only makes sense for the read-only steps.
-# Usage: powershell -NoProfile -File inproc-parity.ps1 -DocumentsBackedUp [-BaseA http://localhost:5001] [-BaseB http://localhost:5000] [-ShowAll]
+# Usage: powershell -NoProfile -File inproc-parity.ps1 -DocumentsBackedUp [-BaseA http://localhost:5000 (in-process)] [-BaseB http://localhost:5001 (legacy exe started with SOLIDWORKS_EXEC_PORT=5001)] [-ShowAll]
 #        powershell -NoProfile -File inproc-parity.ps1 -DocumentsBackedUp -OnlyA -Repeat 5 [-Out results.json]      (one host, N repetitions: results identical across runs? timings)
 param([switch]$DocumentsBackedUp, [string]$BaseA = "http://localhost:5000", [string]$BaseB = "http://localhost:5001", [switch]$ShowAll, [switch]$OnlyA, [int]$Repeat = 1, [string]$Out = "")
 if (-not $DocumentsBackedUp) { throw 'Refusing to run: this scenario creates and closes documents in the live SolidWorks session. Back up any dirty document first and pass -DocumentsBackedUp.' }

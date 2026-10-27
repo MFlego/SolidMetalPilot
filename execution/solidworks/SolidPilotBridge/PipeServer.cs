@@ -2,6 +2,7 @@
 // Line protocol: one command per line, one reply line: "OK <payload>" or "ERR <message>". JSON payloads for state / dialogs.
 //   ping | state | dialogs | dialog_respond <button caption> | activeDoc | events [skip] | log | msgbox <text>
 //   tools_info | reload_tools | tool <request json>      (the in-process tool implementations; see ToolsLoader / ToolGate / HttpFacade)
+//   activity [n] | pause [reason] | resume | gate_timeout <seconds|reset> | snapshots | snapshot_now | snapshot_policy <seconds|off>
 // Every call that touches SolidWorks runs through UiThread.Run (SolidWorks' own thread) with a timeout instead of a hang; dialog commands are plain Win32 and
 // therefore still answer while a modal dialog blocks the UI thread.
 using System;
@@ -18,7 +19,7 @@ namespace SolidPilot.Bridge
     public class PipeServer
     {
         public const string PipeName = "SolidPilotBridge";
-        public const string Version = "0.6";
+        public const string Version = "0.8";
         private readonly SldWorks _sw; private readonly BridgeEvents _ev; private readonly IBridgeServices _services;
         private Thread _t; private volatile bool _stop;
         /// <summary>Set by the add-in once the REST façade exists (for the "tools_info" reply).</summary>
@@ -83,6 +84,15 @@ namespace SolidPilot.Bridge
                     case "reload_tools":
                         if (ToolGate.IsBusy) return "ERR a tool call is running for " + ToolGate.BusySeconds + " s; reload when it has finished";
                         return Ok(ToolsLoader.Load(_services));
+                    // --- control of the gate: STOP / resume, call log, timeout override for tests ---
+                    case "activity": { int n; if (!int.TryParse(arg, out n) || n <= 0) n = 30; return Ok(Activity.Json(n)); }
+                    case "pause": ToolGate.PausedReason = string.IsNullOrWhiteSpace(arg) ? "paused by the user" : arg.Trim(); BridgeLog.Info("PAUSED: " + ToolGate.PausedReason); return Ok("paused: " + ToolGate.PausedReason);
+                    case "resume": ToolGate.PausedReason = null; BridgeLog.Info("RESUMED"); return Ok("resumed");
+                    case "gate_timeout":
+                    {
+                        int s; if (arg.Trim().ToLowerInvariant() == "reset") ToolGate.TimeoutOverrideSeconds = 0; else if (int.TryParse(arg, out s) && s > 0) ToolGate.TimeoutOverrideSeconds = s; else return "ERR usage: gate_timeout <seconds|reset>";
+                        return Ok("call timeout is now " + ToolGate.TimeoutSeconds + " s");
+                    }
                     // --- safety net: silent SaveAs-copy snapshots of the active document (see Snapshots.cs) ---
                     case "snapshots": return Ok(Snapshots.ListJson());
                     case "snapshot_now": return Ok(UiThread.Run(() => Snapshots.Take(_sw, true, "manual"), 60000));

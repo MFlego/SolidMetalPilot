@@ -201,9 +201,89 @@ def find_log_spam():
     return errors
 
 
+class _Patch:
+    """Temporarily replace attributes of execution_client (restored on exit)."""
+
+    def __init__(self, **kw):
+        self._kw = kw
+
+    def __enter__(self):
+        self._saved = {k: getattr(ec, k) for k in self._kw}
+        for k, v in self._kw.items():
+            setattr(ec, k, v)
+        return self
+
+    def __exit__(self, *exc):
+        for k, v in self._saved.items():
+            setattr(ec, k, v)
+        return False
+
+
+def find_inproc_mode_gaps():
+    """In-process mode (the default): the server lives INSIDE SolidWorks, so the adapter must never spawn the legacy exe,
+    must start SolidWorks only when ensure_ready allows it, and must say exactly what is wrong when the add-in is silent."""
+    import time as _time
+    import types
+    errors = []
+    spawned = []
+    fake_subprocess = types.SimpleNamespace(Popen=lambda args, **kw: spawned.append(list(args)) or object(), run=ec.subprocess.run)
+    fast_time = types.SimpleNamespace(sleep=lambda s: None, monotonic=_time.monotonic)
+    legacy = ec.EXECUTION_EXE_PATH
+
+    def attempt(allow_launch, **patches):
+        spawned.clear()
+        try:
+            with _Patch(subprocess=fake_subprocess, time=fast_time, EXECUTION_MODE="inproc", **patches):
+                ec._ensure_server_up(allow_launch=allow_launch)
+            return None
+        except ec.ExecutionLayerError as ex:
+            return str(ex)
+
+    # 1. SolidWorks closed, an ordinary call: a clear error and nothing spawned (a tool call must not launch a CAD application)
+    msg = attempt(False, _server_is_up=lambda: False, _solidworks_running=lambda: False)
+    if not msg or "not running" not in msg:
+        errors.append(f"closed SolidWorks + ordinary call must raise 'SolidWorks is not running', got {msg!r}")
+    if spawned:
+        errors.append(f"an ordinary call spawned something: {spawned}")
+
+    # 2. ensure_ready may start SolidWorks - and only SolidWorks, never the legacy exe - then waits for the add-in
+    answers = iter([False, False, True])
+    msg = attempt(True, _server_is_up=lambda: next(answers, True), _solidworks_running=lambda: False, _find_solidworks_exe=lambda: r"C:\fake\SLDWORKS.exe", LAUNCH_SOLIDWORKS=True)
+    if msg:
+        errors.append(f"ensure_ready flow with a closed SolidWorks should succeed once the add-in answers, got {msg!r}")
+    if spawned != [[r"C:\fake\SLDWORKS.exe"]]:
+        errors.append(f"ensure_ready must start exactly SolidWorks, spawned {spawned} (legacy exe is {legacy})")
+
+    # 3. launching can be forbidden even for ensure_ready
+    msg = attempt(True, _server_is_up=lambda: False, _solidworks_running=lambda: False, _find_solidworks_exe=lambda: r"C:\fake\SLDWORKS.exe", LAUNCH_SOLIDWORKS=False)
+    if not msg or spawned:
+        errors.append(f"EXECUTION_LAUNCH_SOLIDWORKS=0 must refuse to start SolidWorks, got {msg!r}, spawned {spawned}")
+
+    # 4. SolidWorks running but the add-in silent: a precise diagnosis, still nothing spawned
+    msg = attempt(False, _server_is_up=lambda: False, _solidworks_running=lambda: True, ADDIN_WAIT_TIMEOUT=0.05)
+    if not msg or "add-in did not answer" not in msg:
+        errors.append(f"a silent add-in must be diagnosed ('add-in did not answer'), got {msg!r}")
+    if spawned:
+        errors.append(f"a silent add-in must not spawn anything, spawned {spawned}")
+
+    # 5. EXECUTION_MODE=exe keeps the legacy behaviour (and does not even look for SolidWorks)
+    routed = []
+    with _Patch(EXECUTION_MODE="exe", _ensure_exe_server_up=lambda: routed.append("exe"), _solidworks_running=lambda: errors.append("exe mode inspected SolidWorks") or True):
+        ec._ensure_server_up()
+    if routed != ["exe"]:
+        errors.append(f"EXECUTION_MODE=exe must route to the legacy spawner, routed {routed}")
+    return errors
+
+
 def find_all():
     return (find_trust_env_drift() + find_connect_floor_drift() + find_bare_client_calls()
-            + find_probe_gaps() + find_log_spam())
+            + find_probe_gaps() + find_log_spam() + find_inproc_mode_gaps())
+
+
+def test_inproc_mode_never_spawns_the_legacy_exe():
+    """pytest entry point — the adapter follows the in-process architecture."""
+    errors = find_inproc_mode_gaps()
+    assert not errors, "in-process mode regression:\n  - " + "\n  - ".join(errors)
 
 
 def test_trust_env_off():

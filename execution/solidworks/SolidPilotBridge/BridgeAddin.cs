@@ -39,6 +39,8 @@ namespace SolidPilot.Bridge
                 _events = new BridgeEvents(_sw); _events.Attach();
                 _pipe = new PipeServer(_sw, _events, services); _pipe.Start();
                 StartTools(services);
+                try { AgentPaneHost.Create(_sw); }    // the observer's task pane (STOP, activity log): its own try/catch, so that even a type-load failure can only cost the pane, never the add-in
+                catch (Exception pe) { BridgeLog.Error("task pane", pe); }
                 return true;
             }
             catch (Exception e) { BridgeLog.Error("ConnectToSW failed", e); return false; }
@@ -61,6 +63,7 @@ namespace SolidPilot.Bridge
 
         public bool DisconnectFromSW()
         {
+            try { AgentPaneHost.Destroy(); } catch (Exception pe) { BridgeLog.Error("task pane destroy", pe); }
             try
             {
                 if (_http != null) _http.Stop();

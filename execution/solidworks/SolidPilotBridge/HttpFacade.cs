@@ -14,7 +14,7 @@ namespace SolidPilot.Bridge
 {
     public sealed class HttpFacade
     {
-        public const int DefaultPort = 5001;     // 5000 belongs to the out-of-process execution layer until it is retired
+        public const int DefaultPort = 5000;     // the port every client already expects (the out-of-process host, if ever run side by side, takes another: SOLIDWORKS_EXEC_PORT)
         private const int MaxBodyBytes = 32 * 1024 * 1024;
         private readonly Func<string> _bridgeStateJson;
         private HttpListener _listener; private Thread _thread; private volatile bool _stop;
@@ -27,7 +27,7 @@ namespace SolidPilot.Bridge
 
         public static bool Disabled { get { return Environment.GetEnvironmentVariable("SOLIDPILOT_HTTP") == "0"; } }
 
-        /// <summary>Port: env SOLIDPILOT_PORT, else registry HKCU\Software\SolidPilot\Bridge\HttpPort (DWORD), else 5001.</summary>
+        /// <summary>Port: env SOLIDPILOT_PORT, else registry HKCU\Software\SolidPilot\Bridge\HttpPort (DWORD), else 5000.</summary>
         public static int ResolvePort()
         {
             int p;
@@ -39,6 +39,11 @@ namespace SolidPilot.Bridge
         public void Start()
         {
             Port = ResolvePort();
+            // Every request waits in ToolGate for its turn and holds its thread-pool thread meanwhile; the pool only grows by about one thread per half second above its minimum (= the CPU count), so a big
+            // burst of parallel tool calls could queue up behind that ramp. Raising the MINIMUM only changes when threads are created, not how many exist at rest.
+            // (Measured afterwards: the 28 s that 40 parallel /health calls took in tests/inproc-stress.ps1 was the TEST CLIENT's own pool ramp - with the client pool warmed the server answers all 40 in 150 ms -
+            // so this is cheap insurance, not the fix it was first thought to be.)
+            try { int w, io; ThreadPool.GetMinThreads(out w, out io); if (w < 64) ThreadPool.SetMinThreads(64, io); } catch { }
             try
             {
                 _listener = new HttpListener(); _listener.Prefixes.Add("http://localhost:" + Port + "/"); _listener.Start();
@@ -131,7 +136,8 @@ namespace SolidPilot.Bridge
             string state; try { state = _bridgeStateJson(); } catch { state = "null"; }
             return "{\"bridgeLoaded\":true,\"bridgeState\":" + state + ",\"staTimeoutSeconds\":" + ToolGate.TimeoutSeconds + ",\"inProcess\":true,\"toolsGeneration\":" + ToolsLoader.Generation
                  + ",\"bridgeVersion\":" + Json.Str(PipeServer.Version) + ",\"http\":" + InfoJson() + ",\"snapshots\":" + Snapshots.ListJson()
-                 + (Inflight.PreviousSessionDiedDuring != null ? ",\"previousSessionDiedDuring\":" + Json.Str(Inflight.PreviousSessionDiedDuring) : "") + "}";
+                 + (Inflight.PreviousSessionDiedDuring != null ? ",\"previousSessionDiedDuring\":" + Json.Str(Inflight.PreviousSessionDiedDuring) : "")
+                 + (ToolGate.PausedReason != null ? ",\"paused\":" + Json.Str(ToolGate.PausedReason) : "") + "}";
         }
 
         private static string ReadBody(HttpListenerRequest r)

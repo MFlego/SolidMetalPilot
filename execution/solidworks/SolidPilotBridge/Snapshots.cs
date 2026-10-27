@@ -13,8 +13,11 @@ namespace SolidPilot.Bridge
 {
     public static class Snapshots
     {
-        /// <summary>Minimum seconds between snapshots of the same document; 0 = off.</summary>
-        public static int IntervalSeconds;
+        /// <summary>Minimum seconds between snapshots of the same document; 0 = off. ON by default (120 s): validated on 25+ sessions at ~450 ms and no effect on stability.
+        /// Cost measured with tests/doc-soak.ps1 (A/B/A, handles per build cycle of a NEW document): snapshots on 17.1 / 15.5, off 0.9 / 0.5 - each SaveAs3 copy leaves ~16 handles in SolidWorks that are not
+        /// released later (not by closing the document, a GC or idling). At one snapshot per document per 120 s that is a few thousand handles in a day of work, so it stays on; set 0 for stress loops that open
+        /// hundreds of documents.</summary>
+        public static int IntervalSeconds = 120;
         public static int Keep = 8;                 // snapshots kept per document
         public static string LastResult = "never run";
         private static readonly Dictionary<string, DateTime> LastTaken = new Dictionary<string, DateTime>();
@@ -30,7 +33,7 @@ namespace SolidPilot.Bridge
 
         public static void InitFromEnvironment()
         {
-            int s; if (int.TryParse(System.Environment.GetEnvironmentVariable("SOLIDPILOT_SNAPSHOT_SEC"), out s) && s > 0) IntervalSeconds = s;
+            int s; if (int.TryParse(System.Environment.GetEnvironmentVariable("SOLIDPILOT_SNAPSHOT_SEC"), out s)) IntervalSeconds = s > 0 ? s : 0;     // 0 switches the safety net off
         }
 
         public static string ToolOf(string requestBody) { var m = ToolName.Match(requestBody ?? ""); return m.Success ? m.Groups[1].Value : null; }

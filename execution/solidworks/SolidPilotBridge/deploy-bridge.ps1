@@ -21,4 +21,4 @@ if ($LASTEXITCODE -ne 0) { throw 'tools build failed' }
 $bin = "$PSScriptRoot\bin\$Configuration"
 Get-Item "$bin\SolidPilotBridge.dll", "$bin\tools\SolidPilotBridge.Tools.dll" | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize | Out-String
 if ($ToolsOnly) { 'tools built. If SolidWorks is running with the bridge: powershell -File bridge-ping.ps1 -Command reload_tools' }
-else { 'built. Start SolidWorks, then: powershell -File bridge-ping.ps1 -Command ping   (expect: pong v0.6)   and   -Command tools_info' }
+else { 'built. Start SolidWorks, then: powershell -File bridge-ping.ps1 -Command ping   (expect: pong v0.8 or newer)   and   -Command tools_info' }

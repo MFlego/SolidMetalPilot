@@ -13,6 +13,11 @@ from config import (
     CONNECT_TIMEOUT,
     EXECUTION_EXE_PATH,
     SERVER_SPAWN_TIMEOUT,
+    EXECUTION_MODE,
+    LAUNCH_SOLIDWORKS,
+    SOLIDWORKS_EXE,
+    SOLIDWORKS_START_TIMEOUT,
+    ADDIN_WAIT_TIMEOUT,
 )
 from adapter_log import write as _log
 
@@ -84,8 +89,75 @@ def _server_is_up() -> bool:
     return True
 
 
-def _ensure_server_up() -> None:
-    """Start the execution-server exe if it isn't already answering /health.
+def _solidworks_running() -> bool:
+    """True if a SolidWorks process exists (tasklist: no extra dependency)."""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq SLDWORKS.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=15, creationflags=0x08000000).stdout
+        return "sldworks.exe" in out.lower()
+    except Exception as ex:
+        _log(f"!! cannot list processes: {type(ex).__name__}: {ex}")
+        return False
+
+
+def _find_solidworks_exe() -> str:
+    """SLDWORKS.exe: SOLIDWORKS_EXE if set, else the path COM itself would launch (SldWorks.Application -> CLSID -> LocalServer32)."""
+    if SOLIDWORKS_EXE and os.path.isfile(SOLIDWORKS_EXE):
+        return SOLIDWORKS_EXE
+    try:
+        import winreg
+        clsid = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, r"SldWorks.Application\CLSID")
+        cmd = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, "CLSID\\" + clsid + "\\LocalServer32").strip()
+        path = cmd[1:cmd.index('"', 1)] if cmd.startswith('"') else cmd.split(" /")[0].split(" -")[0]
+        if os.path.isfile(path):
+            return path
+    except Exception as ex:
+        _log(f"!! cannot locate SLDWORKS.exe via the COM registration: {type(ex).__name__}: {ex}")
+    return ""
+
+
+def _ensure_server_up(allow_launch: bool = False) -> None:
+    """Make sure something answers /health.
+
+    EXECUTION_MODE=inproc (default): the server is the SolidPilot add-in INSIDE SolidWorks, so there is nothing to spawn. If SolidWorks is closed, start it only when the caller
+    allows it (ensure_ready does; an ordinary tool call must not launch a CAD application as a side effect) and wait for the add-in; if it is running, give the add-in a short time to
+    answer and then say precisely what is wrong. EXECUTION_MODE=exe: the legacy out-of-process exe is spawned (see _ensure_exe_server_up).
+    """
+    if EXECUTION_MODE == "exe":
+        return _ensure_exe_server_up()
+    with _spawn_lock:
+        if _server_is_up():
+            return
+        launched = False
+        if not _solidworks_running():
+            if not (allow_launch and LAUNCH_SOLIDWORKS):
+                raise ExecutionLayerError(
+                    "SolidWorks is not running, so nothing serves " + HEALTH_ENDPOINT + " (the SolidPilot add-in does, from inside SolidWorks). "
+                    "Start SolidWorks, or call ensure_ready, which starts it.")
+            exe = _find_solidworks_exe()
+            if not exe:
+                raise ExecutionLayerError("SolidWorks is not running and SLDWORKS.exe could not be located - start it yourself or set SOLIDWORKS_EXE.")
+            _log(f"-> starting SolidWorks: {exe}")
+            try:
+                subprocess.Popen([exe], cwd=os.path.dirname(exe), creationflags=0x00000008, close_fds=True)   # DETACHED_PROCESS: outlives the adapter
+            except Exception as ex:
+                raise ExecutionLayerError(f"Failed to start SolidWorks: {ex}")
+            launched = True
+        budget = SOLIDWORKS_START_TIMEOUT if launched else ADDIN_WAIT_TIMEOUT
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            if _server_is_up():
+                _log("<- the SolidPilot add-in is answering")
+                return
+            time.sleep(1.0)
+        _log(f"!! the SolidPilot add-in did not answer within {budget:g}s")
+        raise ExecutionLayerError(
+            f"SolidWorks is running but the SolidPilot add-in did not answer {HEALTH_ENDPOINT} within {budget:g}s. Enable 'SolidPilot Bridge' under Tools > Add-Ins "
+            "(tick the start-up box too), or check that no other program holds the port.")
+
+
+def _ensure_exe_server_up() -> None:
+    """Start the execution-server exe if it isn't already answering /health (EXECUTION_MODE=exe).
 
     Guarded against duplicate spawns: re-checks /health inside the lock, spawns at most
     one headless/detached process, then polls /health until it's up. The server is meant
@@ -254,9 +326,9 @@ def ensure_ready() -> dict:
     can take tens of seconds. Returns the parsed readiness dict; does NOT open any document.
     """
     _log("-> ensure_ready")
-    # A down server can't answer /ensure_ready, so spawn it up front (idempotent / guarded).
+    # A down server can't answer /ensure_ready, so bring it up front (idempotent / guarded). In-process mode that means starting SolidWorks, which is exactly what this tool promises.
     if not _server_is_up():
-        _ensure_server_up()
+        _ensure_server_up(allow_launch=True)
 
     def _do():
         with _http_client(timeout=ENSURE_TIMEOUT) as client:

@@ -25,9 +25,24 @@ namespace SolidPilot.Bridge
         private static long _busySinceTicks;       // 0 = idle, else UTC ticks when the running job started
         private static bool _abandoned;            // a timed-out job is still running on the UI thread
 
+        /// <summary>Runtime override of the call timeout (pipe command "gate_timeout"); 0 = use SWMCP_STA_TIMEOUT_SEC or 120 s. For diagnostics and tests.</summary>
+        public static int TimeoutOverrideSeconds;
+
+        /// <summary>Non-null = the user pressed STOP: every tool call is refused with USER_PAUSED until "resume". Lifecycle calls (/health, /state) keep answering.</summary>
+        public static volatile string PausedReason;
+
+        /// <summary>The tool whose call is running right now (null when idle); shown in the task pane.</summary>
+        public static volatile string CurrentTool;
+
+        /// <summary>How long the gate waits for SolidWorks' UI thread to answer a no-op before it refuses a call with SW_BUSY (env SOLIDPILOT_UI_WAIT_SEC, default 20 s).</summary>
+        public static int UiWaitSeconds
+        {
+            get { int s; return int.TryParse(System.Environment.GetEnvironmentVariable("SOLIDPILOT_UI_WAIT_SEC"), out s) && s > 0 ? s : 20; }
+        }
+
         public static int TimeoutSeconds
         {
-            get { int s; return int.TryParse(System.Environment.GetEnvironmentVariable("SWMCP_STA_TIMEOUT_SEC"), out s) && s > 0 ? s : 120; }
+            get { if (TimeoutOverrideSeconds > 0) return TimeoutOverrideSeconds; int s; return int.TryParse(System.Environment.GetEnvironmentVariable("SWMCP_STA_TIMEOUT_SEC"), out s) && s > 0 ? s : 120; }
         }
 
         /// <summary>A tool call is queued or running (so the tools generation must not be swapped and no extra work should be sent to the UI thread).</summary>
@@ -40,9 +55,20 @@ namespace SolidPilot.Bridge
 
         public static ToolReply Error(int status, string message) { return new ToolReply(status, "{\"error\":" + Json.Str(message) + "}"); }
 
-        /// <summary>POST /api/tool/execute (and the pipe command "tool"). Never throws; a refusal is an ordinary FAILED tool response with a stable code.</summary>
+        /// <summary>POST /api/tool/execute (and the pipe command "tool"). Never throws; a refusal is an ordinary FAILED tool response with a stable code. Every call lands in the activity log.</summary>
         public static ToolReply Execute(IToolsHost host, string body)
         {
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var reply = ExecuteCore(host, body);
+            Activity.Add(body, reply, started.ElapsedMilliseconds);
+            return reply;
+        }
+
+        private static ToolReply ExecuteCore(IToolsHost host, string body)
+        {
+            var paused = PausedReason;
+            if (paused != null)
+                return host.Failed(body, "USER_PAUSED", "The user paused SolidPilot (" + paused + "). Do not retry or work around it - tell the user and wait until they resume.");
             var clock = System.Diagnostics.Stopwatch.StartNew();
             // pre-flight, without touching SolidWorks: a modal dialog means the call could never finish. A dialog that flashes up and goes away within 1.5 s is not worth a refusal.
             var dialogs = Dialogs.List();
@@ -58,8 +84,12 @@ namespace SolidPilot.Bridge
             bool posted = false;
             try
             {
-                try { UiThread.Run(() => 0, 5000); }
-                catch (TimeoutException) { return host.Failed(body, "SW_BUSY", "SolidWorks' UI thread did not answer within 5 s (a long operation, or a dialog that is not visible yet); retry shortly."); }
+                // Is the UI thread answering at all? Checked BEFORE the job is queued: a job posted behind a blocked UI thread (an invisible modal dialog) would run late, after the caller already got its
+                // refusal. A freshly started or just-opened session needs several seconds to drain (measured 5-7 s for the first call), so the wait is generous; SOLIDPILOT_UI_WAIT_SEC overrides it.
+                int uiWait = UiWaitSeconds;
+                try { UiThread.Run(() => 0, uiWait * 1000); }
+                catch (TimeoutException) { return host.Failed(body, "SW_BUSY", "SolidWorks' UI thread did not answer within " + uiWait + " s (a long operation, or a dialog that is not visible yet); retry shortly."); }
+                long uiWaited = clock.ElapsedMilliseconds; if (uiWaited > 2000) BridgeLog.Info("gate: the UI thread took " + uiWaited + " ms to answer before this call");
 
                 var call = new Call();
                 long beforeJob = clock.ElapsedMilliseconds;
@@ -85,6 +115,7 @@ namespace SolidPilot.Bridge
         private static void RunJob(IToolsHost host, string body, Call call)
         {
             lock (StateLock) { _busySinceTicks = DateTime.UtcNow.Ticks; }
+            CurrentTool = Snapshots.ToolOf(body);
             try
             {
                 Inflight.Begin(body);                    // crash forensics: still on disk at the next start-up = SolidWorks died during this call
@@ -94,7 +125,7 @@ namespace SolidPilot.Bridge
             catch (Exception ex) { call.Error = ex; BridgeLog.Error("tool call", ex); }
             finally
             {
-                Inflight.End();
+                Inflight.End(); CurrentTool = null;
                 lock (StateLock) { _busySinceTicks = 0; _abandoned = false; call.Finished = true; }
                 One.Release();
                 call.Done.Set();
