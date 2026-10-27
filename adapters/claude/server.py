@@ -1588,10 +1588,14 @@ def sheet_metal_feature(
     symmetric_thickness: bool = False,
     clear_profile: bool = True,
     edge_index: int = -1,
+    sketch_name: str = "",
 ) -> str:
     """Create sheet metal features on the active part. Lengths METERS, angles DEGREES.
 
-    'base_flange' — a sheet metal base from the ACTIVE sketch profile; exits sketch mode.
+    'base_flange' — a sheet metal base from the ACTIVE sketch profile (or sketch_name = that sketch when none is
+        active: a rebuild, e.g. an equation change, closes the active sketch; NO_PROFILE_SKETCH says so); exits sketch
+        mode. k_factor is applied through the sheet-metal override (creates D2@Sheet-Metal1) when it differs from the
+        template's.
         thickness · bend_radius (default = thickness) · k_factor (0.5).
         THICKENING SIDE IS A BUILD DECISION, and it is silent when wrong: `reverse_thickness`
         thickens to the OPPOSITE side of the sketch plane, `symmetric_thickness` splits ±t/2.
@@ -1642,6 +1646,8 @@ def sheet_metal_feature(
         params["fixed_face_index"] = fixed_face_index
     if edge_index >= 0:
         params["edge_index"] = edge_index
+    if sketch_name:
+        params["sketch_name"] = sketch_name
     return _call("sheet_metal_feature", params)
 
 
@@ -1908,7 +1914,9 @@ def sheet_metal_miter_flange(
     edges: str = "",
     points: str = "",
     height: Optional[float] = None,
+    profile_points: str = "",
     profile_sketch: str = "",
+    dimension_profile: bool = True,
     angle: float = 90.0,
     position: Literal["material_inside", "material_outside", "bend_outside", "bend_centerline", "bend_sharp", "bend_tangent"] = "material_inside",
     bend_radius: Optional[float] = None,
@@ -1923,11 +1931,21 @@ def sheet_metal_miter_flange(
     (the weld-tight rim / lip). Lengths METERS, angle DEGREES.
     Edges: edges = JSON array of edge indices IN ORDER along the chain (analyze_model(edges)) and/or points. A closed
         loop of 4 edges, an open chain of 3 and a single edge all work.
-    Profile (generated for you): a line `height` off the sheet face, starting at the START of the chain (the end of
-        the first edge that does not continue into the second) on the sheet's end face; angle is measured from the
-        sheet's flat outward continuation - 90 = perpendicular (default), 45 flares outward, > 90 leans over the
-        sheet. Or give profile_sketch = the name of your own profile sketch (drawn on a plane through the start of
-        the first edge) and no height.
+    Profile (generated for you), starting at the sheet edge at the START of the chain (the end of the first edge
+        that does not continue into the second), drawn on the sheet's end face:
+        - height (+ angle): ONE straight line `height` off the sheet face; angle is measured from the sheet's flat
+          outward continuation - 90 = perpendicular (default), 45 flares outward, > 90 leans over the sheet.
+        - profile_points = '[[across, up], ...]' (JSON string, meters): a POLYLINE of offsets from the chain start in
+          the sheet's own frame - `up` = off the sheet face, `across` = toward the sheet's interior (negative =
+          outward). One feature with a bend at every vertex of every corner: a wall + rim + lip is
+          '[[0,0.10],[0.019,0.10],[0.019,0.113]]' (wall 100 mm up, rim 19 mm inward, lip 13 mm up = 12 mitre bends
+          round a closed 4-edge loop). Takes precedence over height.
+        - or profile_sketch = the name of your own profile sketch (drawn on a plane through the start of the first
+          edge) and no height.
+        dimension_profile (default True): the generated profile is also DEFINED like a hand-made one - horizontal /
+        vertical relations, the start tied to the sheet's edge vertex, one length dimension per segment named D1..Dn
+        in order (result profile_drawn.defined.dimensions, constrained 'fully_defined') - so equations can drive them:
+        equations(links='{"D1@Sketch6":"WallHeight", ...}').
     position: material_inside (default: the flange's outer face is flush with the sheet's boundary) |
         material_outside | bend_outside | bend_centerline | bend_sharp | bend_tangent.
     bend_radius (default = the sheet's), rip_gap (the gap at the mitres, default 0.0762 mm = 0.003 in),
@@ -1940,6 +1958,9 @@ def sheet_metal_miter_flange(
         params["edges"] = json.loads(edges)
     if points:
         params["points"] = json.loads(points)
+    params["dimension_profile"] = dimension_profile
+    if profile_points:
+        params["profile_points"] = json.loads(profile_points)
     if profile_sketch:
         params["profile_sketch"] = profile_sketch
     for key, val in (("height", height), ("bend_radius", bend_radius), ("rip_gap", rip_gap), ("start_offset", start_offset),
@@ -1947,6 +1968,90 @@ def sheet_metal_miter_flange(
         if val is not None:
             params[key] = val
     return _call("sheet_metal_miter_flange", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: document_units
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def document_units(
+    action: Literal["get", "set"] = "get",
+    length: Literal["", "mm", "cm", "m", "in", "ft"] = "",
+    decimals: Optional[int] = None,
+) -> str:
+    """Read or set the ACTIVE document's length unit and decimal places (what the part shows, what the cut list and
+    a flat DXF are written in: a DXF exported from an inch document has $INSUNITS = inches). The tool API itself
+    stays in METERS whatever the unit is.
+    action='set': length mm | cm | m | in | ft and/or decimals 0..8. The standing rule is 2 decimals for metric and
+    3 for inches, which is what decimals defaults to when only length is given. Returns the unit read back and
+    verified. Bumps state_version."""
+    params: dict = {"action": action}
+    if length:
+        params["length"] = length
+    if decimals is not None:
+        params["decimals"] = decimals
+    return _call("document_units", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: equations
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def equations(
+    action: Literal["list", "set", "delete"] = "list",
+    variables: str = "",
+    links: str = "",
+    equations: str = "",
+    delete: str = "",
+) -> str:
+    """Equations of the active part: GLOBAL VARIABLES and dimensions linked to them - the parametric backbone
+    (BoxWidth, WallHeight, SheetThickness, InsideRadius, KFactor ...). Existing equations of the same name are
+    updated, not duplicated; everything is re-solved and the part rebuilt; an active sketch stays active.
+    action='list' -> [{index, name, text, value, global_variable}] with values in the document's length unit.
+    action='set':
+        variables = '{"BoxWidth":"12in","KFactor":0.45}' (JSON string): global variables. Give lengths WITH a unit
+            ("12in", "304.8mm"); a bare number is read in the document's unit, so only use it for unitless values.
+        links = '{"D1@Sketch1":"BoxWidth","Thickness@Sheet-Metal":"SheetThickness","D1@Sheet-Metal":"InsideRadius",
+            "D2@Sheet-Metal1":"KFactor"}': dimension -> variable (a bare name is quoted for you) or an expression.
+            Names: sketch dimensions "D1@Sketch1" (sketch_center_rectangle and the mitre profile make them);
+            sheet-metal thickness "Thickness@Sheet-Metal", bend radius "D1@Sheet-Metal", K-factor
+            "D2@Sheet-Metal1" (exists once a K is set: sheet_metal_params / base_flange k_factor).
+        equations = '["\\"D7@Edge-Flange1\\"= \\"WallHeight\\""]': raw equation strings.
+    action='delete' (or delete inside 'set'): delete = '["WallHeight","D1@Sketch1"]' or "WallHeight,D1@Sketch1".
+    Returns the full list, verified, problems (a refused equation is named with its text). Bumps state_version.
+    Changing a variable later is the way to re-size the part: equations(action='set', variables='{"WallHeight":"5in"}')."""
+    params: dict = {"action": action}
+    if variables:
+        params["variables"] = json.loads(variables)
+    if links:
+        params["links"] = json.loads(links)
+    if equations:
+        params["equations"] = json.loads(equations)
+    if delete:
+        params["delete"] = delete if not delete.lstrip().startswith("[") else json.loads(delete)
+    return _call("equations", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sketch_center_rectangle
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sketch_center_rectangle(
+    width: float,
+    height: float,
+    plane: str = "Front Plane",
+) -> str:
+    """The resilient MASTER SKETCH: a rectangle centred on the origin of `plane`, FULLY DEFINED - two dimensions
+    (D1 = width along the sketch's X, D2 = height along Y, METERS) and the centre tied to the origin - in one call.
+    The sketch is left ACTIVE (like create_sketch), so the next feature (sheet_metal_feature base_flange, an
+    extrude ...) consumes it. Link D1 / D2 to equation variables later: equations(links='{"D1@Sketch1":
+    "BoxWidth","D2@Sketch1":"BoxHeight"}').
+    Returns {sketch, size:[w,h] (what the lines really measure), dimensions:['D1@Sketch1','D2@Sketch1'],
+    constrained:'fully_defined', verified}; `verified` is false and `problems` says why if the size differs from the
+    request. Sketch inference is switched off while it draws, so the corners cannot snap to model edges nearby. The
+    plane is selected by NAME, so it does not depend on the view. Errors: SKETCH_ALREADY_ACTIVE, PLANE_NOT_FOUND.
+    Bumps state_version."""
+    return _call("sketch_center_rectangle", {"width": width, "height": height, "plane": plane})
 
 
 # ---------------------------------------------------------------------------

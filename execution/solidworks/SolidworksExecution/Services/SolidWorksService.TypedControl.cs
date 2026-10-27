@@ -421,7 +421,7 @@ namespace SolidworksExecution.Services
         {
             var o = new JObject(); var sm = FirstOfType(doc, "SheetMetal");
             if (sm == null) { o["sheet_metal"] = false; return o; }
-            o["sheet_metal"] = true;
+            o["sheet_metal"] = true; o["units"] = ReadUnits(doc);           // the cut-list values below are in THIS length unit (everything else here is meters)
             var d = (ISheetMetalFeatureData)sm.GetDefinition(); bool acc = d.AccessSelections(doc, null);
             try
             {

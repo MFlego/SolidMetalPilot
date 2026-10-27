@@ -181,6 +181,24 @@ Test 'F14 the mitre box flattens: the flat pattern rebuilds and the blank is lar
     Del-Feature (Rg $m).feature
 }
 
+Test 'F15 miter flange with a MULTI-segment profile (wall + rim + lip): ONE feature, 12 mitre bends, wall + lip + t tall, rim inward; bad profiles refused' {
+    New-Plate
+    $edges = (Get-Edges).edges | Where-Object { [math]::Abs($_.mid[2]) -lt 1e-6 }; $loop = "[$((@($edges | ForEach-Object { $_.i })) -join ',')]"
+    $r = Ok (Invoke-Tool 'sheet_metal_miter_flange' @{ edges = $loop; profile_points = '[[0,0.02],[0.008,0.02],[0.008,0.025]]' }) 'rim + lip'; $g = Rg $r; $b = Body $r
+    Assert ($g.verified -eq $true -and $g.feature_error -eq 0) "report: $($g | ConvertTo-Json -Compress -Depth 5)"
+    Near $b.z 0.0265 5e-5 'wall 20 + lip 5 + t 1.5'; Near $b.x 0.100 5e-5 'material inside keeps x'; Near $b.y 0.060 5e-5 'material inside keeps y'; Assert ($b.faces -gt 38) "faces $($b.faces)"
+    $pts = @($g.profile_drawn.points); Assert ($pts.Count -eq 4) "profile points: $($pts.Count)"; Near $pts[1][2] 0.02 1e-9 'the wall rises 20 mm'; Near $pts[3][2] 0.025 1e-9 'the lip tops out at 25 mm'
+    $horizontal = { param($a, $c) [math]::Sqrt([math]::Pow($a[0] - $c[0], 2) + [math]::Pow($a[1] - $c[1], 2)) }; $fromCentre = { param($a) [math]::Sqrt($a[0] * $a[0] + $a[1] * $a[1]) }
+    Near (& $horizontal $pts[1] $pts[2]) 0.008 1e-9 'the rim runs 8 mm'; Assert ((& $fromCentre $pts[2]) -lt (& $fromCentre $pts[1])) "the rim must run INWARD (toward the plate centre): $($pts[1] -join ',') -> $($pts[2] -join ',')"
+    $mf = (Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'list')).features | Where-Object { $_.type -eq 'SMMiteredFlange' }; $bends = @($mf.sub_features | Where-Object { $_ -like 'Miterbend*' }).Count; Assert ($bends -eq 12) "mitre bends: $bends (expected 3 per corner x 4)"
+    $f = Rg (Ok (Invoke-Tool 'flat_pattern_control' @{}) 'flat'); Assert ($f.verified -eq $true) 'the flat pattern must rebuild'; Assert ($f.flat.size[0] -gt 0.150 -and $f.flat.size[1] -gt 0.110) "flat blank $(Mm $f.flat.size[0]) x $(Mm $f.flat.size[1]) mm"
+    Del-Feature $g.feature
+    Fail (Invoke-Tool 'sheet_metal_miter_flange' @{ edges = $loop; profile_points = '[[0]]' }) 'INVALID_PARAMETER' 'a one-number point' | Out-Null
+    Fail (Invoke-Tool 'sheet_metal_miter_flange' @{ edges = $loop; profile_points = '[[0,0],[0,0]]' }) 'INVALID_PARAMETER' 'a profile with no length' | Out-Null
+    Fail (Invoke-Tool 'sheet_metal_miter_flange' @{ edges = $loop; profile_points = '[[0,0.0000001]]' }) 'INVALID_PARAMETER' 'a 0.1 micron segment' | Out-Null
+    Fail (Invoke-Tool 'sheet_metal_miter_flange' @{ edges = $loop; profile_points = 'not json' }) 'INVALID_PARAMETER' 'not JSON' | Out-Null
+}
+
 Invoke-Tool 'close_document' @{ save = $false; close_all = $true } | Out-Null
 "" ; $fail = @($script:results | Where-Object { -not $_.pass }).Count
 $h1 = (Sw).HandleCount; $m1 = [int]((Sw).PrivateMemorySize64 / 1MB)

@@ -214,9 +214,57 @@ namespace SolidworksExecution.Services
         private static double[] Along(double[] p, double[] u, double s) { return new[] { p[0] + u[0] * s, p[1] + u[1] * s, p[2] + u[2] * s }; }
         private static bool Same(double[] a, double[] b) { return Math.Abs(a[0] - b[0]) < 1e-6 && Math.Abs(a[1] - b[1]) < 1e-6 && Math.Abs(a[2] - b[2]) < 1e-6; }
 
-        // Draws the miter flange's profile: a line from the start of the chain, rising from the sheet face by `height` at `angle` (90 = perpendicular to the sheet) on the planar end face that is
-        // perpendicular to the first edge. Returns the sketch name and what it drew (model space, meters).
-        private string MakeMiterProfile(IModelDoc2 doc, List<IEdge> edges, double height, double angleRad, out JObject drawn)
+        // removes a feature (here a generated profile sketch) by name; never throws
+        private void DeleteFeatureQuietly(IModelDoc2 doc, string name)
+        {
+            try { var s = FindFeatureByName(doc, name, null); if (s != null) { doc.ClearSelection2(true); s.Select2(false, 0); doc.Extension.DeleteSelection2((int)swDeleteSelectionOptions_e.swDelete_Absorbed); doc.ClearSelection2(true); } }
+            catch (COMException) { }
+        }
+
+        // The start of the generated profile follows the sheet's edge vertex (an external reference): SolidWorks wants the profile attached to the sheet edge, and it then moves with the base shape. Sketch
+        // inference used to do this silently (it snapped the first point onto the vertex); with inference off the relation is explicit - and unconditional, with or without the dimensions of DefineProfile.
+        private bool TieProfileStart(IModelDoc2 doc, List<ISketchSegment> segs, IVertex start)
+        {
+            var first = segs[0] as ISketchLine; var startPt = first == null ? null : first.GetStartPoint2() as ISketchPoint;
+            doc.ClearSelection2(true);
+            bool tied = startPt != null && start != null && startPt.Select4(false, null) && ((IEntity)start).Select4(true, null);
+            if (tied) doc.SketchAddConstraints("sgCOINCIDENT");
+            doc.ClearSelection2(true);
+            return tied;
+        }
+
+        // Draws the miter flange's profile on the planar end face that is perpendicular to the first edge: a polyline that starts at the sheet edge (the start of the chain) and goes through `local`,
+        // points given as [across, up] offsets from that start in the sheet's own frame: `up` along the sheet face's outward normal, `across` toward the sheet's interior (negative = outward).
+        // A single point (-cos(a) h, sin(a) h) is a straight flange of height h at angle a (90 = perpendicular). Returns the sketch name and what it drew (model space, meters).
+        // Relations + dimensions of the generated profile (see MakeMiterProfile): returns the dimension names, the constrained status and notes about what could not be defined.
+        private JObject DefineProfile(IModelDoc2 doc, ISketch sk, List<ISketchSegment> segs, List<double[]> pts, string sketchName)
+        {
+            var dims = new JArray(); var notes = new JArray();
+            for (int i = 0; i < segs.Count; i++)
+            {
+                double dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1];
+                string rel = Math.Abs(dy) < 1e-9 ? "sgHORIZONTAL" : Math.Abs(dx) < 1e-9 ? "sgVERTICAL" : null;
+                if (rel == null) { notes.Add("segment " + (i + 1) + " is slanted: no relation or angle dimension added"); continue; }
+                doc.ClearSelection2(true); if (segs[i].Select4(false, null)) doc.SketchAddConstraints(rel);
+            }
+            doc.ClearSelection2(true);
+            for (int i = 0; i < segs.Count; i++)
+            {
+                double dx = pts[i + 1][0] - pts[i][0], dy = pts[i + 1][1] - pts[i][1], len = Math.Sqrt(dx * dx + dy * dy);
+                if (Math.Abs(dx) > 1e-9 && Math.Abs(dy) > 1e-9) continue;                              // slanted: not dimensioned here
+                double mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2; double ox = Math.Abs(dy) < 1e-9 ? 0 : 0.02, oy = Math.Abs(dy) < 1e-9 ? 0.02 : 0;   // label beside the segment
+                string nm = DimensionSegment(doc, segs[i], len, mx + ox, my + oy, sketchName);
+                if (nm != null) dims.Add(nm); else notes.Add("segment " + (i + 1) + " could not be dimensioned");
+            }
+            int status = sk.GetConstrainedStatus();
+            var res = new JObject { ["dimensions"] = dims, ["constrained_status"] = status, ["constrained"] = ConstrainedName(status) };
+            if (notes.Count > 0) res["notes"] = notes;
+            return res;
+        }
+
+        // The start is always tied to the sheet's edge vertex (the flange needs it). dimension = also DEFINE the sketch like a hand-made one: horizontal / vertical relations and one length dimension per
+        // segment (D1..Dn, in order), so the profile can be driven by equations (WallHeight, LipLength ...) and re-sized later. Slanted segments get no relation (reported); the flange does not depend on it.
+        private string MakeMiterProfile(IModelDoc2 doc, List<IEdge> edges, List<double[]> local, bool dimension, out JObject drawn)
         {
             var first = edges[0]; var second = edges.Count > 1 ? edges[1] : null;
             var a = ((IVertex)first.GetStartVertex()).GetPoint() as double[]; var b = ((IVertex)first.GetEndVertex()).GetPoint() as double[];
@@ -235,8 +283,18 @@ namespace SolidworksExecution.Services
             if (sheet == null) throw new ToolFailure("MITER_PROFILE_FAILED", "The first edge borders no planar sheet face.");
             var n = Unit(sheet.Normal as double[]);                          // outward from the material
             var onFace = PointOnFace(sheet); var inward = V(onFace, p0); inward = Unit(V(inward, new[] { d[0] * Dot(inward, d), d[1] * Dot(inward, d), d[2] * Dot(inward, d) }));    // across the sheet, toward its interior
-            var dir = Unit(new[] { n[0] * Math.Sin(angleRad) - inward[0] * Math.Cos(angleRad), n[1] * Math.Sin(angleRad) - inward[1] * Math.Cos(angleRad), n[2] * Math.Sin(angleRad) - inward[2] * Math.Cos(angleRad) });
-            var q = Along(p0, dir, height);
+            // the polyline in model space: p0 -> p0 + across * inward + up * n for every given point (a first point at the sheet edge itself is not repeated)
+            var path = new List<double[]> { p0 };
+            foreach (var lp in local)
+            {
+                var pt = new[] { p0[0] + inward[0] * lp[0] + n[0] * lp[1], p0[1] + inward[1] * lp[0] + n[1] * lp[1], p0[2] + inward[2] * lp[0] + n[2] * lp[1] };
+                var prev = path[path.Count - 1]; double seg = Math.Sqrt(Dot(V(pt, prev), V(pt, prev)));
+                if (seg < 1e-9) continue;                                  // the same point twice (e.g. [0,0] first)
+                if (seg < 1e-5) throw new ToolFailure("INVALID_PARAMETER", "A profile segment is only " + (seg * 1000).ToString("G3") + " mm long (profile_points are in METERS).");
+                path.Add(pt);
+            }
+            if (path.Count < 2) throw new ToolFailure("INVALID_PARAMETER", "The profile has no length: give height (> 0) or profile_points [[across, up], ...] in meters.");
+            var q = path[path.Count - 1]; var dir = Unit(V(path[1], p0));
 
             // the planar face perpendicular to the edge that holds p0 (the sheet's end face): the sketch plane
             IFace2 plane = null;
@@ -254,16 +312,46 @@ namespace SolidworksExecution.Services
             if (!((IEntity)plane).Select4(false, null)) throw new ToolFailure("SELECTION_FAILED", "Could not select the end face for the profile sketch.");
             doc.SketchManager.InsertSketch(true);
             var sk = doc.SketchManager.ActiveSketch as ISketch; if (sk == null) throw new ToolFailure("MITER_PROFILE_FAILED", "InsertSketch did not open a sketch on the end face.");
-            string name = ((IFeature)sk).Name;
+            string name = ((IFeature)sk).Name; JObject defined = null; bool ok = false;
             try
             {
                 var mu = _solidWorks.GetMathUtility() as IMathUtility; var xf = sk.ModelToSketchTransform as IMathTransform;
                 Func<double[], double[]> toSketch = pt => (double[])((IMathPoint)((IMathPoint)mu.CreatePoint(pt)).MultiplyTransform(xf)).ArrayData;
-                var sp = toSketch(p0); var ep = toSketch(q);
-                if (doc.SketchManager.CreateLine(sp[0], sp[1], 0.0, ep[0], ep[1], 0.0) == null) throw new ToolFailure("MITER_PROFILE_FAILED", "CreateLine failed in the profile sketch.");
+                var segs = new List<ISketchSegment>(); var spts = new List<double[]>();
+                var sm = doc.SketchManager; bool inference = sm.AutoInference; sm.AutoInference = false;        // inference would snap the points to model edges nearby (see sketch_center_rectangle)
+                try
+                {
+                    for (int i = 1; i < path.Count; i++)
+                    {
+                        var sp = toSketch(path[i - 1]); var ep = toSketch(path[i]);
+                        var seg = sm.CreateLine(sp[0], sp[1], 0.0, ep[0], ep[1], 0.0) as ISketchSegment;
+                        if (seg == null) throw new ToolFailure("MITER_PROFILE_FAILED", "CreateLine failed for profile segment " + i + " in the profile sketch.");
+                        segs.Add(seg); if (i == 1) spts.Add(sp); spts.Add(ep);
+                    }
+                }
+                finally { sm.AutoInference = inference; }
+                for (int i = 0; i < segs.Count; i++)                                                      // the profile must be where it was asked, not where SolidWorks moved it
+                {
+                    var ln = segs[i] as ISketchLine; var s0 = ln == null ? null : ln.GetStartPoint2() as ISketchPoint; var s1 = ln == null ? null : ln.GetEndPoint2() as ISketchPoint;
+                    if (s0 == null || s1 == null || Math.Abs(s0.X - spts[i][0]) > 1e-6 || Math.Abs(s0.Y - spts[i][1]) > 1e-6 || Math.Abs(s1.X - spts[i + 1][0]) > 1e-6 || Math.Abs(s1.Y - spts[i + 1][1]) > 1e-6)
+                        throw new ToolFailure("MITER_PROFILE_FAILED", "Profile segment " + (i + 1) + " was not drawn where asked (SolidWorks moved its end points): the profile sketch was removed.");
+                }
+                bool tied = TieProfileStart(doc, segs, Same(p0, a) ? (IVertex)first.GetStartVertex() : (IVertex)first.GetEndVertex());      // always: the flange needs the profile attached to the sheet edge
+                if (dimension)
+                {
+                    try { defined = DefineProfile(doc, sk, segs, spts, name); }
+                    catch (Exception ex) when (!(ex is ToolFailure)) { defined = new JObject { ["error"] = ex.GetType().Name + ": " + ex.Message }; }       // the flange does not depend on it
+                }
+                if (!tied)
+                {
+                    if (defined == null) defined = new JObject();
+                    var nn = defined["notes"] as JArray ?? new JArray(); nn.Add("the profile start could not be tied to the sheet edge"); defined["notes"] = nn;
+                }
+                ok = true;
             }
-            finally { doc.SketchManager.InsertSketch(true); doc.ClearSelection2(true); }
-            drawn = new JObject { ["sketch"] = name, ["from"] = new JArray(p0), ["to"] = new JArray(q), ["direction"] = new JArray(dir), ["sheet_normal"] = new JArray(n) };
+            finally { doc.SketchManager.InsertSketch(true); doc.ClearSelection2(true); if (!ok) DeleteFeatureQuietly(doc, name); }
+            drawn = new JObject { ["sketch"] = name, ["from"] = new JArray(p0), ["to"] = new JArray(q), ["points"] = new JArray(path.Select(x => (object)new JArray(x)).ToArray()), ["direction"] = new JArray(dir), ["sheet_normal"] = new JArray(n), ["inward"] = new JArray(inward) };
+            if (defined != null) drawn["defined"] = defined;
             return name;
         }
 
@@ -275,8 +363,17 @@ namespace SolidworksExecution.Services
                 var edges = ResolveEdges(doc, p["edges"], p["points"]);
                 if (edges.Count == 0) throw new ToolFailure("MISSING_PARAMETER", "edges (indices from analyze_model(edges), in order along the chain) and/or points are required: the edges the flange runs along.");
                 string profile = p.Value<string>("profile_sketch"); double height = p.Value<double?>("height") ?? 0.0;
-                if (string.IsNullOrEmpty(profile) && height <= 0) throw new ToolFailure("MISSING_PARAMETER", "height (meters: the flange's height off the sheet) or profile_sketch (the name of a sketch you drew) is required.");
                 double angle = (p.Value<double?>("angle") ?? 90.0) * Math.PI / 180.0;
+                // the generated profile: profile_points = [[across, up], ...] (meters, offsets from the chain start in the sheet's frame) or, for one straight flange, height + angle
+                List<double[]> local = null; var pp = AsArray(p["profile_points"], "profile_points");
+                if (pp != null && pp.Count > 0)
+                {
+                    if (pp.Count > 24) throw new ToolFailure("INVALID_PARAMETER", "profile_points has " + pp.Count + " points; at most 24.");
+                    local = new List<double[]>();
+                    foreach (var t in pp) { var a = t as JArray; if (a == null || a.Count < 2) throw new ToolFailure("INVALID_PARAMETER", "profile_points must be [[across, up], ...] in meters (across = toward the sheet's interior, up = off the sheet face)."); local.Add(new[] { a[0].Value<double>(), a[1].Value<double>() }); }
+                }
+                else if (height > 0) local = new List<double[]> { new[] { -Math.Cos(angle) * height, Math.Sin(angle) * height } };
+                if (string.IsNullOrEmpty(profile) && local == null) throw new ToolFailure("MISSING_PARAMETER", "height (meters: the flange's height off the sheet), profile_points ([[across, up], ...] for a multi-segment profile) or profile_sketch (the name of a sketch you drew) is required.");
                 string posName = (p.Value<string>("position") ?? "material_inside").ToLowerInvariant(); int pos;
                 switch (posName)
                 {
@@ -297,7 +394,7 @@ namespace SolidworksExecution.Services
                 var before = BodyStats(doc); string created = null; JObject drawn = null; double radius = radiusArg ?? SheetRadius(doc); var allowance = KFactorAllowance(doc, p.Value<double?>("k_factor"));
                 try
                 {
-                    if (string.IsNullOrEmpty(profile)) { profile = created = MakeMiterProfile(doc, edges, height, angle, out drawn); }
+                    if (string.IsNullOrEmpty(profile)) { profile = created = MakeMiterProfile(doc, edges, local, p.Value<bool?>("dimension_profile") ?? true, out drawn); }
                     if (FindFeatureByName(doc, profile, null) == null) throw new ToolFailure("FEATURE_NOT_FOUND", "No sketch named '" + profile + "'.");
                     doc.ClearSelection2(true);
                     // the profile is selected BY NAME as a SKETCH (the selection type the command expects; Feature.Select2 selects it as a generic feature)
@@ -318,11 +415,7 @@ namespace SolidworksExecution.Services
                 }
                 finally
                 {
-                    if (created != null)                                     // the call failed after the sketch was drawn: do not leave it behind
-                    {
-                        try { var s = FindFeatureByName(doc, created, null); if (s != null) { doc.ClearSelection2(true); s.Select2(false, 0); doc.Extension.DeleteSelection2((int)swDeleteSelectionOptions_e.swDelete_Absorbed); doc.ClearSelection2(true); } }
-                        catch (COMException) { }
-                    }
+                    if (created != null) DeleteFeatureQuietly(doc, created);   // the call failed after the sketch was drawn: do not leave it behind
                 }
             });
         }

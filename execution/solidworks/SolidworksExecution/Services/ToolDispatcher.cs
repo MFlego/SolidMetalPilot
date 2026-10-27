@@ -56,6 +56,9 @@ namespace SolidworksExecution.Services
                 case "sheet_metal_hem":        return service.SheetMetalHem(request);
                 case "sheet_metal_break_corner": return service.SheetMetalBreakCorner(request);
                 case "sheet_metal_miter_flange": return service.SheetMetalMiterFlange(request);
+                case "document_units":         return service.DocumentUnits(request);
+                case "equations":              return service.Equations(request);
+                case "sketch_center_rectangle": return service.SketchCenterRectangle(request);
                 default:                       return null;
             }
         }

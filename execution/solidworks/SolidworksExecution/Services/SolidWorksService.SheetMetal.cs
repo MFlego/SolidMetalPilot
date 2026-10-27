@@ -67,6 +67,17 @@ namespace SolidworksExecution.Services
                     string baseProfileName = (modelDoc.SketchManager.ActiveSketch as IFeature)?.Name;
                     if (modelDoc.SketchManager.ActiveSketch != null)
                         modelDoc.SketchManager.InsertSketch(true);
+                    // sketch_name: use that sketch as the profile (e.g. after a rebuild closed the active one) - and a clear error instead of "creation returned null" when there is no profile at all
+                    string requestedProfile = p?.Value<string>("sketch_name");
+                    if (!string.IsNullOrEmpty(requestedProfile))
+                    {
+                        if (FindFeatureByName(modelDoc, requestedProfile, null) == null)
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "FEATURE_NOT_FOUND", $"No sketch named '{requestedProfile}'.");
+                        baseProfileName = requestedProfile;
+                    }
+                    if (string.IsNullOrEmpty(baseProfileName))
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "NO_PROFILE_SKETCH",
+                            "No sketch is active, so there is no base-flange profile. Activate it (edit_sketch) or pass sketch_name (a rebuild - e.g. an equation change - closes the active sketch).");
                     modelDoc.ClearSelection2(true);
                     if (!string.IsNullOrEmpty(baseProfileName))
                         modelDoc.Extension.SelectByID2(baseProfileName, "SKETCH", 0, 0, 0, false, 0, null, 0);

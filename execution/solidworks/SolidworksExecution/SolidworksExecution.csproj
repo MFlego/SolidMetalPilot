@@ -107,6 +107,7 @@
     <Compile Include="Services\SolidWorksService.Assembly.cs" />
     <Compile Include="Services\SolidWorksService.TypedControl.cs" />
     <Compile Include="Services\SolidWorksService.SheetMetalForms.cs" />
+    <Compile Include="Services\SolidWorksService.Parametric.cs" />
     <Compile Include="Services\ToolDispatcher.cs" />
     <Compile Include="Startup.cs" />
   </ItemGroup>

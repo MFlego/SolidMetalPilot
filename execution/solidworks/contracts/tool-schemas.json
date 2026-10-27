@@ -489,7 +489,8 @@
     "reverse_thickness": "boolean (base_flange only, default false — thicken to the OPPOSITE side of the sketch plane; derive from which side the original blank's faces sit, e.g. feature_map's SMBaseFlange created faces)",
     "symmetric_thickness": "boolean (base_flange only, default false — thicken BOTH ways off the sketch plane (±t/2, mid-plane style); reproduce the original's own flag — it also sets the intrinsic sheet orientation downstream bend directions fold against)",
     "clear_profile": "boolean (edge_flange_sketch only, default true — wipe the generated default rectangle so the caller redraws the ORIGINAL's custom profile via add_sketch_entity; the op leaves the generated sketch ACTIVE and echoes its MEASURED frame in result_geometry, then edge_flange_finish creates the flange from it — SW's documented custom-profile flow; the flange API accepts only a sketch IT generated)",
-    "edge_index": "integer (edge_flange/edge_flange_sketch/edge_flange_finish, optional — the attach edge's stable index from analyze_model(edges); PREFERRED over ex/ey/ez, whose coordinate pick can miss a real edge (KNOWN-LIMITATIONS #6). Since v0.7.0 the simple edge_flange accepts it too (shared SelectFlangeEdge). For the two-call custom-profile flow pass the SAME index to both calls — the sketch step adds no solid geometry, so edge enumeration is stable)"
+    "edge_index": "integer (edge_flange/edge_flange_sketch/edge_flange_finish, optional — the attach edge's stable index from analyze_model(edges); PREFERRED over ex/ey/ez, whose coordinate pick can miss a real edge (KNOWN-LIMITATIONS #6). Since v0.7.0 the simple edge_flange accepts it too (shared SelectFlangeEdge). For the two-call custom-profile flow pass the SAME index to both calls — the sketch step adds no solid geometry, so edge enumeration is stable)",
+    "sketch_name": "string (base_flange, optional — the profile sketch to use when none is active; a rebuild such as an equation change closes the active sketch. NO_PROFILE_SKETCH when there is neither)"
    }
   },
   "output": "→ see execution-response.json"
@@ -609,8 +610,10 @@
    "params": {
     "edges": "JSON string/array (edge indices IN ORDER along the chain, from analyze_model(edges))",
     "points": "JSON string/array (points ON the edges, meters: [[x,y,z], ...])",
-    "height": "number (flange height off the sheet in meters; required unless profile_sketch is given)",
+    "height": "number (flange height off the sheet in meters; one straight line; required unless profile_points or profile_sketch is given)",
+    "profile_points": "JSON string/array ([[across, up], ...] meters: a polyline of offsets from the chain start in the sheet's own frame - up = off the sheet face, across = toward the sheet's interior; one bend per vertex per corner; takes precedence over height)",
     "profile_sketch": "string (optional — the name of the caller's own profile sketch)",
+    "dimension_profile": "boolean (default true — also DEFINE the generated profile: H/V relations, the start tied to the sheet's edge vertex, one length dimension per segment D1..Dn; result profile_drawn.defined)",
     "angle": "number (degrees from the sheet's flat outward continuation; 90 = perpendicular (default))",
     "position": "string ('material_inside' (default) | 'material_outside' | 'bend_outside' | 'bend_centerline' | 'bend_sharp' | 'bend_tangent')",
     "bend_radius": "number (meters; default = the sheet's)",
@@ -623,6 +626,47 @@
    }
   },
   "output": "→ see execution-response.json — result_geometry {feature, edges, profile_sketch, profile_drawn{...}, definition{...}, body_before, body_after, feature_error, verified}"
+ },
+ "document_units": {
+  "description": "Reads or sets the active document's length unit and decimal places (IModelDocExtension.SetUserPreferenceInteger swUnitsLinear / swUnitsLinearDecimalPlaces). The cut list and an exported flat DXF are written in this unit ($INSUNITS follows it); the tool API itself stays in meters. decimals defaults to 2 for metric and 3 for inches. Bumps state_version on set.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state — only checked for action='set')",
+   "params": {
+    "action": "string ('get' (default) | 'set')",
+    "length": "string (set — 'mm' | 'cm' | 'm' | 'in' | 'ft')",
+    "decimals": "integer (set — 0..8)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {length, length_code, decimals, units_per_meter, verified}"
+ },
+ "equations": {
+  "description": "Lists, sets and deletes the equations of the active part: global variables (BoxWidth = 12in) and dimensions linked to them (\"D1@Sketch1\"= \"BoxWidth\"; sheet-metal \"Thickness@Sheet-Metal\", \"D1@Sheet-Metal\" (radius), \"D2@Sheet-Metal1\" (K)). An equation of an existing name is updated; everything is re-solved and the part rebuilt, an active sketch is kept active. Changing a variable later re-sizes the part. Bumps state_version unless action='list'.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state — only checked when not listing)",
+   "params": {
+    "action": "string ('list' (default) | 'set' | 'delete')",
+    "variables": "JSON string/object ({\"BoxWidth\": \"12in\", \"KFactor\": 0.45}: global variables; lengths with a unit)",
+    "links": "JSON string/object ({\"D1@Sketch1\": \"BoxWidth\"}: dimension -> variable name or expression)",
+    "equations": "JSON string/array (raw equation strings)",
+    "delete": "JSON string/array or comma-separated names to delete"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {unit, count, equations[{index, name, text, value, global_variable, disabled}], requested, problems, verified}"
+ },
+ "sketch_center_rectangle": {
+  "description": "Creates the resilient master sketch in one call: a rectangle centred on the origin of a plane, FULLY DEFINED by two dimensions (D1 width on X, D2 height on Y) and the centre tied to the origin. The sketch is left active for the next feature. The plane is selected by name (view independent). Meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "width": "number (required — meters, X extent)",
+    "height": "number (required — meters, Y extent)",
+    "plane": "string (default 'Front Plane')"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {sketch, plane, width, height, dimensions['D1@Sketch1','D2@Sketch1'], constrained_status, constrained, verified}"
  },
  "modify_dimension": {
   "description": "Universal parametric edit: sets a named display dimension's value in SI units (meters for length, radians for angle), rebuilds, and bumps state_version. Pairs with analyze_model(features), which reports each feature's dimension full-names + SI values. The keystone for building variants.",
