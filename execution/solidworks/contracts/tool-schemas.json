@@ -494,6 +494,136 @@
   },
   "output": "→ see execution-response.json"
  },
+ "feature_data": {
+  "description": "Typed read/write of ANY feature's full definition (the SolidWorks *FeatureData interface) with WRITE-VERIFY. action='list' lists the features (type, suppressed, error, sub-features, definition interface when known); action='get' returns every property of one feature with its value and access (rw/ro); action='set' writes properties / invokes definition methods / sets a custom bend allowance, calls ModifyDefinition and reads the definition back: result_geometry lists applied / ignored (value SolidWorks kept) / unknown / rejected and verified=false unless every requested value stuck (ModifyDefinition returns true even when a value was silently ignored). Lengths meters, angles radians. list/get do not change state_version; set bumps it.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state — only checked for action='set')",
+   "params": {
+    "action": "string ('list' | 'get' | 'set', default 'get')",
+    "feature": "string (get/set — exact feature tree name; sub-features such as 'EdgeBend1' work)",
+    "properties": "JSON string/object (set — {\"PropertyName\": value}, names case-insensitive; numbers, booleans and strings only)",
+    "calls": "JSON string/array (set — [{\"method\": \"SetOverrideDefaultParameter2\", \"args\": [1, true]}], methods of the definition interface invoked before ModifyDefinition)",
+    "custom_bend_allowance": "JSON string/object (set — {\"type\": \"k_factor\"|\"direct\"|\"deduction\"|\"table\", \"k_factor\": 0.42, \"bend_allowance\": m, \"bend_deduction\": m, \"table_file\": path}, on definitions that carry one)",
+    "include_readonly": "boolean (get, default true — also list read-only properties)",
+    "include_all": "boolean (list, default false — also show folders and reference planes)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry carries the list / the properties / the write-verify report"
+ },
+ "sheet_metal_params": {
+  "description": "Reads or sets the sheet-metal parameters of the active part with the call sequences that actually take effect. action='get' returns the whole sheet-metal state in one call (global thickness/radius/auto relief/overrides/bend allowance, base flange or Convert feature, edge flanges, per-bend K, closed corners, flat-pattern options, and the cut-list item: the live FLAT BLANK size, cutting lengths, bend and cut-out counts). action='set' (any combination): k_factor / bend_allowance_type + bend_allowance / bend_deduction -> the GLOBAL bend allowance through the bend-allowance override (creates the dimension D2@Sheet-Metal1 = K, which an equation can drive); auto_relief rectangular|obround|tear + relief_ratio; thickness / bend_radius -> the base flange's overrides (or the Convert feature's); reset_overrides -> back to the document defaults. The result is the fresh summary + verified / problems. Lengths meters.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state — only checked for action='set')",
+   "params": {
+    "action": "string ('get' | 'set', default 'get')",
+    "k_factor": "number (set — global K-factor 0..1)",
+    "bend_allowance_type": "string (set — 'k_factor' (default) | 'direct' | 'deduction')",
+    "bend_allowance": "number (set — direct bend allowance, meters)",
+    "bend_deduction": "number (set — bend deduction, meters)",
+    "auto_relief": "string (set — 'rectangular' | 'obround' | 'tear'; an obround relief stores no ratio)",
+    "relief_ratio": "number (set — auto-relief ratio)",
+    "thickness": "number (set — sheet thickness in meters, via the base flange / Convert overrides)",
+    "bend_radius": "number (set — bend radius in meters, via the base flange / Convert overrides)",
+    "reset_overrides": "string/array (set — 'bend_allowance,auto_relief,bend_parameters': switch the override off; bend_allowance off removes D2@Sheet-Metal1)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry is the sheet-metal summary (+ set / verified / problems / notes for action='set')"
+ },
+ "sheet_metal_corners": {
+  "description": "Closes sheet-metal corners (Closed Corner features) through the typed API — no UI. Targets are the wall END FACES to extend (the end face that points at the neighbouring wall across the corner gap), one per corner, given as face indices from analyze_model(faces) and/or points on the faces; indices are resolved to points up front so they stay valid while earlier corners change the topology. Each created corner is configured (type, gap, ratio) and read back. Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "faces": "JSON string/array (face indices from analyze_model(faces), e.g. '[20,37,38,29]')",
+    "points": "JSON string/array (points ON the faces, meters: [[x,y,z], ...])",
+    "corner_type": "string ('overlap' (default) | 'underlap' | 'butt')",
+    "gap": "number (corner gap in meters, default 0.0000762 = 0.003 in)",
+    "overlap_ratio": "number (overlap/underlap ratio, default 1.0)",
+    "open_bend_region": "boolean (default false)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {created[{feature, configured, corner_type, gap, overlap_ratio}], failed[{point, reason}], closed_corners_before/after, verified}"
+ },
+ "flat_pattern_control": {
+  "description": "Controls the flat pattern of the active sheet-metal part: unsuppresses the Flat-Pattern feature, applies the given options, measures the flat blank, optionally exports the flat DXF non-interactively (IPartDoc.ExportToDWG2 — the part must be saved), then suppresses the flat pattern again (unless leave_flat). Returns folded and flat body sizes in meters with face/edge counts. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "corner_treatment": "boolean (optional — corner trim relief on the flat pattern)",
+    "simplify_bends": "boolean (optional)",
+    "merge_faces": "boolean (optional — false splits the flat faces)",
+    "show_slit_in_corner_relief": "boolean (optional)",
+    "dxf_path": "string (optional — write the flat DXF here; SAVE_REQUIRED when the part has never been saved)",
+    "dxf_flags": "integer (default 5 — 1 = outline, 5 = outline + bend lines)",
+    "leave_flat": "boolean (default false — keep the flat pattern unsuppressed)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {folded{size,faces,edges}, flat{size,faces,edges}, options, dxf{path,flags,written,bytes}, flat_pattern_left, verified}"
+ },
+ "sheet_metal_hem": {
+  "description": "Hems the free edge(s) of sheet-metal walls (IFeatureManager.InsertSheetMetalHem2): closed, open, tear_drop (180 < angle < 270) or rolled; double is refused by SolidWorks for every parameter set tried. All edges of one call make ONE Hem feature. The hem folds toward the side of the picked edge (outer top edge -> outward). Edges are selected as objects (indices from analyze_model(edges) or points on them). Returns the hem's definition read back + body before/after. Lengths meters, angle degrees. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "edges": "JSON string/array (edge indices from analyze_model(edges))",
+    "points": "JSON string/array (points ON the edges, meters: [[x,y,z], ...])",
+    "hem_type": "string ('closed' (default) | 'open' | 'tear_drop' | 'rolled' | 'double')",
+    "length": "number (hem length in meters; required for open / closed / double)",
+    "gap": "number (meters; a closed hem's gap is fixed at 0.1 mm by SolidWorks)",
+    "angle": "number (degrees; tear_drop 180..270 exclusive, rolled < 360; open / closed are 180 regardless)",
+    "radius": "number (meters; default = the sheet's bend radius)",
+    "miter_gap": "number (meters between neighbouring hems at a corner, default 0.0005)",
+    "bend_position": "string ('material_inside' (default) | 'bend_outside')",
+    "reverse": "boolean (default false)",
+    "k_factor": "number (optional custom K-factor for the hem bends)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, hem_type, edges, definition{...}, body_before, body_after, feature_error, verified}"
+ },
+ "sheet_metal_break_corner": {
+  "description": "Fillets or chamfers the corners of sheet-metal walls (the Break-Corner feature, IModelDoc2.InsertSheetMetalBreakCorner). Targets are the planar FACES of flange walls (indices from analyze_model(faces) or points on them); many faces make one feature; edges and a wall's end face do not work. Option flags are set on the feature and read back. Meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "faces": "JSON string/array (face indices from analyze_model(faces))",
+    "points": "JSON string/array (points ON the faces, meters: [[x,y,z], ...])",
+    "corner_type": "string ('fillet' (default) | 'chamfer')",
+    "distance": "number (required — fillet radius / chamfer length in meters)",
+    "internal_corners_only": "boolean (optional)",
+    "centered_on_bend_lines": "boolean (optional)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, corner_type, faces, definition{...}, body_before, body_after, feature_error, verified}"
+ },
+ "sheet_metal_miter_flange": {
+  "description": "ONE mitre flange along a chain of edges (IFeatureManager.InsertSheetMetalMiterFlange): a closed loop gives mitred corners all round in a single feature. The profile sketch is generated at the start of the chain (a line `height` off the sheet at `angle`, on the perpendicular end face) unless profile_sketch names the caller's own. Edges are selected as objects. Lengths meters, angle degrees. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "edges": "JSON string/array (edge indices IN ORDER along the chain, from analyze_model(edges))",
+    "points": "JSON string/array (points ON the edges, meters: [[x,y,z], ...])",
+    "height": "number (flange height off the sheet in meters; required unless profile_sketch is given)",
+    "profile_sketch": "string (optional — the name of the caller's own profile sketch)",
+    "angle": "number (degrees from the sheet's flat outward continuation; 90 = perpendicular (default))",
+    "position": "string ('material_inside' (default) | 'material_outside' | 'bend_outside' | 'bend_centerline' | 'bend_sharp' | 'bend_tangent')",
+    "bend_radius": "number (meters; default = the sheet's)",
+    "rip_gap": "number (gap at the mitres in meters, default 0.0000762)",
+    "trim_side_bends": "boolean (default true)",
+    "start_offset": "number (meters)",
+    "end_offset": "number (meters)",
+    "relief_ratio": "number (default 0.5)",
+    "k_factor": "number (optional custom K-factor for the flange bends)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, edges, profile_sketch, profile_drawn{...}, definition{...}, body_before, body_after, feature_error, verified}"
+ },
  "modify_dimension": {
   "description": "Universal parametric edit: sets a named display dimension's value in SI units (meters for length, radians for angle), rebuilds, and bumps state_version. Pairs with analyze_model(features), which reports each feature's dimension full-names + SI values. The keystone for building variants.",
   "input": {

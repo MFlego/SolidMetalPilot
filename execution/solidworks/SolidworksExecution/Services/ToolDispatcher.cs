@@ -49,6 +49,13 @@ namespace SolidworksExecution.Services
                 case "insert_component":       return service.InsertComponent(request);
                 case "add_mate":               return service.AddMateTool(request);
                 case "save_body_as_part":      return service.SaveBodyAsPart(request);
+                case "feature_data":           return service.FeatureData(request);
+                case "sheet_metal_params":     return service.SheetMetalParams(request);
+                case "sheet_metal_corners":    return service.SheetMetalCorners(request);
+                case "flat_pattern_control":   return service.FlatPatternControl(request);
+                case "sheet_metal_hem":        return service.SheetMetalHem(request);
+                case "sheet_metal_break_corner": return service.SheetMetalBreakCorner(request);
+                case "sheet_metal_miter_flange": return service.SheetMetalMiterFlange(request);
                 default:                       return null;
             }
         }

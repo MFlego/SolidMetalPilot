@@ -104,7 +104,7 @@ The `adapters/` layer is provider-specific and replaceable. Because the executio
 
 ## Tool List
 
-The system currently exposes **47 tools** for *doing* and **13 MCP resources** for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `submit_feature_graph`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. All lengths are in meters (SolidWorks internal units).
+The system currently exposes **54 tools** for *doing* and **13 MCP resources** for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `submit_feature_graph`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. All lengths are in meters (SolidWorks internal units).
 
 The **resources** carry the rule set and the contracts, not behaviour: `recipe://usage/index` plus one static `recipe://usage/<section>` per rule section, and `schema://feature-graph` + `schema://analysis-artifact`. The split is deliberate — a tool's description is paid on every single turn whether or not it is used, while a resource body costs only when read, so near-static reference material belongs on the resource side.
 
@@ -130,6 +130,13 @@ The **resources** carry the rule set and the contracts, not behaviour: `recipe:/
 - `add_reference_geometry` — reference plane, axis, or point.
 - `create_pattern` — linear or circular pattern.
 - `sheet_metal_feature` — sheet metal: base_flange, edge_flange (incl. custom-profile flanges), sketched_bend, flat_pattern.
+- `sheet_metal_params` — the part's whole sheet-metal state in one read, and the call sequences that really set the global K-factor / bend allowance, auto relief, thickness and bend radius.
+- `sheet_metal_corners` — Closed Corner features through the API (no UI), configured and read back.
+- `sheet_metal_hem` — closed / open / tear-drop / rolled hems on free edges (one feature for many edges), definition read back.
+- `sheet_metal_break_corner` — fillet or chamfer the corners of flange walls (Break-Corner).
+- `sheet_metal_miter_flange` — ONE mitre flange along an edge chain; a closed loop gives weld-tight mitred corners, and the profile sketch is generated for you.
+- `flat_pattern_control` — flat-pattern options, the flat blank's size, and a direct, non-interactive flat DXF export.
+- `feature_data` — typed read/write of any feature's full definition (the SolidWorks `*FeatureData` interface) with write-verify: it reports which values SolidWorks actually kept.
 
 ### Editing
 - `modify_dimension` — changes the value of a named dimension (the basis for variants).

@@ -110,6 +110,14 @@ namespace SolidworksExecution.Services
                     bfData.KFactor = kFactor;
 
                     feature = featureMgr.CreateFeature(bfData) as IFeature;
+
+                    // SolidWorks accepts OverrideKFactor / KFactor above and silently keeps the template's K (measured: asked 0.45, the part read 0.5). The K-factor that really takes effect is the
+                    // Sheet-Metal feature's bend-allowance override (it also creates the D2@Sheet-Metal1 dimension an equation can drive), so apply it that way when it differs.
+                    if (feature != null)
+                    {
+                        try { if (!ApplyGlobalKFactor(modelDoc, kFactor)) ExecLog.Write($"base_flange: global K-factor {kFactor} could not be applied"); }
+                        catch (Exception kex) { ExecLog.Write($"base_flange: global K-factor {kFactor} failed: {kex.Message}"); }
+                    }
                 }
                 else if (featureType == "edge_flange")
                 {

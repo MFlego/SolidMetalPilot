@@ -1646,6 +1646,310 @@ def sheet_metal_feature(
 
 
 # ---------------------------------------------------------------------------
+# Tool: feature_data  (typed read / write of ANY feature definition, with write-verify)
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def feature_data(
+    action: Literal["list", "get", "set"] = "get",
+    feature: str = "",
+    properties: str = "",
+    calls: str = "",
+    custom_bend_allowance: str = "",
+    include_readonly: bool = True,
+    include_all: bool = False,
+) -> str:
+    """Read or write the FULL typed definition (the SolidWorks *FeatureData interface) of a feature: the
+    escape hatch for every setting sheet_metal_feature / edit_feature have no parameter for. Lengths METERS,
+    angles RADIANS. Runs the same typed API calls inside SolidWorks that the other tools use.
+
+    action='list': the features with type, suppressed flag, error code, sub-features and the definition
+        interface when known (include_all=True also shows folders / planes).
+    action='get': feature = exact tree name (sub-features work: 'EdgeBend1'). Returns EVERY property with its
+        value and access (rw / ro). Examples: Edge-Flange1 -> OffsetDistance (flange length), BendRadius,
+        PositionType, GapDistance, ReliefTearType; EdgeBend1 [OneBend] -> UseDefaultBendAllowance,
+        BendAllowanceType (2 = K-factor), KFactor (a PER-BEND override); Closed Corner1 -> CornerType
+        (1 butt, 2 overlap, 3 underlap), GapDistance, OverlapUnderlapRatio, OpenBendRegion; Flat-Pattern1 ->
+        CornerTreatment, MergeFace, SimplifyBends, ShowSlitInCornerRelief; Sheet-Metal1 -> Thickness,
+        BendRadius, KFactor, AutoReliefType, ReliefRatio.
+    action='set': properties = '{"OffsetDistance": 0.035}' (a JSON string; names case-insensitive; numbers,
+        booleans and strings only), calls = '[{"method":"SetOverrideDefaultParameter2","args":[1,true]}]'
+        invokes methods of the definition first, custom_bend_allowance = '{"type":"k_factor","k_factor":0.42}'
+        (type k_factor | direct | deduction | table). Bumps state_version.
+    WRITE-VERIFY: ModifyDefinition returns true even when SolidWorks silently ignored a value, so the
+        definition is read back and compared. The result lists applied / ignored (with the value SolidWorks
+        kept) / unknown / rejected and verified=false unless every requested value stuck. A value that is
+        ignored usually lacks a precondition (the sheet-metal bend-allowance / auto-relief OVERRIDE must be on
+        first) - sheet_metal_params runs those sequences for you.
+    Errors: FEATURE_NOT_FOUND, NO_DEFINITION (sketches and flattened bends have none), NO_VALID_CHANGES,
+        MODIFY_FAILED."""
+    params: dict = {"action": action, "include_readonly": include_readonly, "include_all": include_all}
+    if feature:
+        params["feature"] = feature
+    if properties:
+        params["properties"] = json.loads(properties)
+    if calls:
+        params["calls"] = json.loads(calls)
+    if custom_bend_allowance:
+        params["custom_bend_allowance"] = json.loads(custom_bend_allowance)
+    return _call("feature_data", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_params  (global sheet-metal parameters; the sequences that take effect)
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_params(
+    action: Literal["get", "set"] = "get",
+    k_factor: Optional[float] = None,
+    bend_allowance_type: str = "",
+    bend_allowance: Optional[float] = None,
+    bend_deduction: Optional[float] = None,
+    auto_relief: Literal["", "rectangular", "obround", "tear"] = "",
+    relief_ratio: Optional[float] = None,
+    thickness: Optional[float] = None,
+    bend_radius: Optional[float] = None,
+    reset_overrides: str = "",
+) -> str:
+    """Read or set the sheet-metal parameters of the ACTIVE part with the call sequences that really take
+    effect. Lengths METERS. (The plain Sheet-Metal property writes are silently ignored until the override
+    is switched on; this tool does the whole sequence and reads the result back.)
+
+    action='get' -> {global:{thickness, bend_radius, auto relief, overrides{...}, bend_allowance{type,
+        k_factor, ...}, dimensions}, base_flange | convert, edge_flanges[{length, angle, radius, gap}],
+        bends[{k_factor, use_default_allowance}], closed_corners[...], flat_pattern{suppressed, options},
+        cut_list[{name, properties}]} - the whole sheet-metal state of the part in one call. Read-only (no
+        state_version change). cut_list is the part's cut-list item as SolidWorks computes it LIVE, in the
+        document's length unit: 'Bounding Box Length' / 'Bounding Box Width' = the FLAT BLANK size (no need to
+        unsuppress the flat pattern), 'Cutting Length-Outer' / '-Inner' (laser path), 'Bends', 'Cut Outs',
+        'Bounding Box Area' / '-Blank', 'Sheet Metal Thickness', 'Bend Radius', 'Bend Allowance' (K), 'Mass'.
+    action='set' (any combination; bumps state_version, returns the fresh summary + verified / problems):
+        k_factor -> the GLOBAL K-factor, through the bend-allowance override. That creates the dimension
+            D2@Sheet-Metal1 (= K) which an equation can drive: the old "create the K override in the UI
+            first" step is gone. bend_allowance_type 'direct' / 'deduction' with bend_allowance /
+            bend_deduction (meters) selects the other allowance models.
+        auto_relief 'rectangular' | 'obround' | 'tear' (+ relief_ratio; obround stores no ratio).
+        thickness / bend_radius -> the base flange's overrides (a Convert-to-Sheet-Metal part: the Convert
+            feature's own overrides). The part rebuilds; read the flat blank afterwards.
+        reset_overrides = 'bend_allowance,auto_relief' (also bend_parameters) -> back to the document /
+            material defaults. Switching bend_allowance off deletes D2@Sheet-Metal1.
+    A PER-BEND K-factor override lives on the bend (feature_data on 'EdgeBend1'), not here.
+    Errors: NOT_SHEET_METAL, WRONG_DOCUMENT_TYPE, MODIFY_FAILED, INVALID_PARAMETER."""
+    params: dict = {"action": action}
+    if k_factor is not None:
+        params["k_factor"] = k_factor
+    if bend_allowance_type:
+        params["bend_allowance_type"] = bend_allowance_type
+    if bend_allowance is not None:
+        params["bend_allowance"] = bend_allowance
+    if bend_deduction is not None:
+        params["bend_deduction"] = bend_deduction
+    if auto_relief:
+        params["auto_relief"] = auto_relief
+    if relief_ratio is not None:
+        params["relief_ratio"] = relief_ratio
+    if thickness is not None:
+        params["thickness"] = thickness
+    if bend_radius is not None:
+        params["bend_radius"] = bend_radius
+    if reset_overrides:
+        params["reset_overrides"] = [s.strip() for s in reset_overrides.split(",") if s.strip()]
+    return _call("sheet_metal_params", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_corners  (Closed Corner through the typed API)
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_corners(
+    faces: str = "",
+    points: str = "",
+    corner_type: Literal["overlap", "underlap", "butt"] = "overlap",
+    gap: float = 0.0000762,
+    overlap_ratio: float = 1.0,
+    open_bend_region: bool = False,
+) -> str:
+    """Close sheet-metal corners (the Closed Corner feature) through the API - no UI, no keyboard driving.
+    Lengths METERS.
+
+    Targets - the wall END FACE to extend at each corner: the end face that points at the neighbouring wall
+    across the corner gap (one per corner):
+        faces  = '[20,37,38,29]'  JSON string; indices from analyze_model(faces). They are resolved to points
+                 on the faces up front, so they stay valid while earlier corners change the topology.
+        points = '[[x,y,z], ...]' JSON string; meters, a point ON the face (alternative or addition).
+    corner_type 'overlap' (default) | 'underlap' | 'butt'; gap = the corner gap (default 0.0000762 = 0.003 in);
+    overlap_ratio (1.0); open_bend_region.
+    Returns every created 'Closed CornerN' with configured=true when type / gap / ratio read back as asked,
+    plus the failures with the reason (e.g. the face cannot close a corner). Bumps state_version.
+    Errors: NOT_SHEET_METAL, FACE_NOT_FOUND, MISSING_PARAMETER, NO_CORNER_CREATED."""
+    params: dict = {"corner_type": corner_type, "gap": gap, "overlap_ratio": overlap_ratio, "open_bend_region": open_bend_region}
+    if faces:
+        params["faces"] = json.loads(faces)
+    if points:
+        params["points"] = json.loads(points)
+    return _call("sheet_metal_corners", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: flat_pattern_control  (flat-pattern options, blank size, direct flat DXF)
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def flat_pattern_control(
+    corner_treatment: Optional[bool] = None,
+    simplify_bends: Optional[bool] = None,
+    merge_faces: Optional[bool] = None,
+    show_slit_in_corner_relief: Optional[bool] = None,
+    dxf_path: str = "",
+    dxf_flags: int = 5,
+    leave_flat: bool = False,
+) -> str:
+    """Control the flat pattern of the ACTIVE sheet-metal part and read the flat blank.
+    Unsuppresses the Flat-Pattern feature, applies the options you give (None = leave as is), measures, exports
+    when asked, then SUPPRESSES it again so the model stays folded (leave_flat=True keeps it flat).
+    Options: corner_treatment (corner trim relief), merge_faces (False splits the flat faces), simplify_bends,
+        show_slit_in_corner_relief.
+    dxf_path: writes the flat DXF directly and non-interactively (ExportToDWG2; the Save-As route blocks the
+        SolidWorks UI - never use it). The part must be SAVED first (save_document) or SAVE_REQUIRED is
+        returned. dxf_flags: 1 = outline, 5 = outline + bend lines (default).
+    Returns folded and flat body sizes in METERS [x, y, z] with face / edge counts - compare the flat blank with
+    your closed-form blank math - the options as they read back, and the DXF size. Bumps state_version.
+    Errors: NOT_SHEET_METAL, FLAT_PATTERN_ERROR, SAVE_REQUIRED, MODIFY_FAILED."""
+    params: dict = {"dxf_flags": dxf_flags, "leave_flat": leave_flat}
+    for key, val in (("corner_treatment", corner_treatment), ("simplify_bends", simplify_bends),
+                     ("merge_faces", merge_faces), ("show_slit_in_corner_relief", show_slit_in_corner_relief)):
+        if val is not None:
+            params[key] = val
+    if dxf_path:
+        params["dxf_path"] = dxf_path
+    return _call("flat_pattern_control", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_hem
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_hem(
+    edges: str = "",
+    points: str = "",
+    hem_type: Literal["closed", "open", "tear_drop", "rolled", "double"] = "closed",
+    length: Optional[float] = None,
+    gap: Optional[float] = None,
+    angle: Optional[float] = None,
+    radius: Optional[float] = None,
+    miter_gap: Optional[float] = None,
+    bend_position: Literal["material_inside", "bend_outside"] = "material_inside",
+    reverse: bool = False,
+    k_factor: Optional[float] = None,
+) -> str:
+    """Hem the free edge(s) of sheet-metal walls. Lengths METERS, angle DEGREES.
+    Edges: edges = JSON array of edge indices from analyze_model(edges) - the free edge on top of a flange wall -
+        and/or points = '[[x,y,z], ...]' (a point ON the edge). ALL edges of one call make ONE hem feature.
+    Direction: the hem folds toward the side of the edge you pick - the OUTER top edge of a wall folds outward,
+        the INNER top edge folds inward (inside the box).
+    hem_type: closed (default; its gap is fixed at 0.1 mm by SolidWorks), open (always 180 degrees whatever
+        angle you pass), tear_drop (180 < angle < 270, default 225), rolled (angle up to < 360, default 180),
+        double (SolidWorks refused every parameter set tried -> HEM_FAILED; use closed).
+    length: required for open / closed / double. radius: default = the sheet's bend radius (set it for tear_drop
+        and rolled). miter_gap: gap between neighbouring hems at a corner (default 0.5 mm).
+    bend_position: material_inside (default; the bend stays within the wall's height) | bend_outside (the bend
+        adds to the part's height). reverse flips the leg. k_factor: a custom K for these hem bends only.
+    Returns the hem with its definition read back (Type, Length, GapDistance, Angle, Radius, BendPosition ...),
+        the body before / after and verified. Edit afterwards with feature_data: Length and BendPosition are
+        editable; Type is not (delete and re-create). Bumps state_version.
+    Errors: HEM_FAILED (not a free edge, no room, an unsupported type / angle), EDGE_NOT_FOUND, NOT_SHEET_METAL."""
+    params: dict = {"hem_type": hem_type, "bend_position": bend_position, "reverse": reverse}
+    if edges:
+        params["edges"] = json.loads(edges)
+    if points:
+        params["points"] = json.loads(points)
+    for key, val in (("length", length), ("gap", gap), ("angle", angle), ("radius", radius), ("miter_gap", miter_gap), ("k_factor", k_factor)):
+        if val is not None:
+            params[key] = val
+    return _call("sheet_metal_hem", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_break_corner
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_break_corner(
+    faces: str = "",
+    points: str = "",
+    corner_type: Literal["fillet", "chamfer"] = "fillet",
+    distance: float = 0.0,
+    internal_corners_only: Optional[bool] = None,
+    centered_on_bend_lines: Optional[bool] = None,
+) -> str:
+    """Break (fillet or chamfer) the corners of sheet-metal walls - the Break-Corner feature. METERS.
+    Targets: faces = JSON array of face indices from analyze_model(faces) - the planar face of a flange wall, outer
+        or inner - and/or points = '[[x,y,z], ...]' (a point ON the face). Many faces make ONE feature. It does NOT
+        work from an edge, from a wall's end face, or from the base flange's face beside flanges
+        (BREAK_CORNER_FAILED).
+    corner_type fillet | chamfer; distance = the fillet radius / chamfer length (> 0, required).
+    internal_corners_only, centered_on_bend_lines: option flags, set on the feature and read back.
+    A 45 degree chamfer is how a wall end is cut for a mitre.
+    Returns the feature, its definition read back, the body before / after and verified. Bumps state_version."""
+    params: dict = {"corner_type": corner_type, "distance": distance}
+    if faces:
+        params["faces"] = json.loads(faces)
+    if points:
+        params["points"] = json.loads(points)
+    if internal_corners_only is not None:
+        params["internal_corners_only"] = internal_corners_only
+    if centered_on_bend_lines is not None:
+        params["centered_on_bend_lines"] = centered_on_bend_lines
+    return _call("sheet_metal_break_corner", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_miter_flange
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_miter_flange(
+    edges: str = "",
+    points: str = "",
+    height: Optional[float] = None,
+    profile_sketch: str = "",
+    angle: float = 90.0,
+    position: Literal["material_inside", "material_outside", "bend_outside", "bend_centerline", "bend_sharp", "bend_tangent"] = "material_inside",
+    bend_radius: Optional[float] = None,
+    rip_gap: Optional[float] = None,
+    trim_side_bends: bool = True,
+    start_offset: Optional[float] = None,
+    end_offset: Optional[float] = None,
+    relief_ratio: Optional[float] = None,
+    k_factor: Optional[float] = None,
+) -> str:
+    """ONE mitre flange along a chain of edges: a closed loop gives mitred corners all round in a single feature
+    (the weld-tight rim / lip). Lengths METERS, angle DEGREES.
+    Edges: edges = JSON array of edge indices IN ORDER along the chain (analyze_model(edges)) and/or points. A closed
+        loop of 4 edges, an open chain of 3 and a single edge all work.
+    Profile (generated for you): a line `height` off the sheet face, starting at the START of the chain (the end of
+        the first edge that does not continue into the second) on the sheet's end face; angle is measured from the
+        sheet's flat outward continuation - 90 = perpendicular (default), 45 flares outward, > 90 leans over the
+        sheet. Or give profile_sketch = the name of your own profile sketch (drawn on a plane through the start of
+        the first edge) and no height.
+    position: material_inside (default: the flange's outer face is flush with the sheet's boundary) |
+        material_outside | bend_outside | bend_centerline | bend_sharp | bend_tangent.
+    bend_radius (default = the sheet's), rip_gap (the gap at the mitres, default 0.0762 mm = 0.003 in),
+        trim_side_bends, start_offset / end_offset along the chain, relief_ratio, k_factor.
+    Returns the feature, the profile it drew (model space), its definition read back, the body before / after and
+        verified. Bumps state_version. Errors: MITER_FLANGE_FAILED, MITER_PROFILE_FAILED (no end face - pass
+        profile_sketch), EDGE_NOT_FOUND, NOT_SHEET_METAL."""
+    params: dict = {"angle": angle, "position": position, "trim_side_bends": trim_side_bends}
+    if edges:
+        params["edges"] = json.loads(edges)
+    if points:
+        params["points"] = json.loads(points)
+    if profile_sketch:
+        params["profile_sketch"] = profile_sketch
+    for key, val in (("height", height), ("bend_radius", bend_radius), ("rip_gap", rip_gap), ("start_offset", start_offset),
+                     ("end_offset", end_offset), ("relief_ratio", relief_ratio), ("k_factor", k_factor)):
+        if val is not None:
+            params[key] = val
+    return _call("sheet_metal_miter_flange", params)
+
+
+# ---------------------------------------------------------------------------
 # Tool: modify_dimension
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
