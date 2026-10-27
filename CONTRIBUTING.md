@@ -56,6 +56,8 @@ powershell -File execution\solidworks\SolidPilotBridge\tests\tool-call.ps1 featu
 
 To explore an API question before writing a tool, use the in-process script runner: `bridge-ping.ps1 -Command "run_cs <file.cs>"` (or `probes\run-probe.ps1 <file.cs> [arg]`) compiles a C# snippet inside SolidWorks and runs it against the live API. Add-in diagnostics are in `%LOCALAPPDATA%\SolidPilot\bridge.log`; the safety net's snapshots and the in-flight marker are in the same folder.
 
+Two rules for probes. **`run_cs` bypasses the safety gate** (no dialog check, no snapshot), and some API calls corrupt SolidWorks' heap rather than failing (`SplineParamData.SetControlPoints` / `ISketchSpline.ModifyControlPoint` killed `sldworks.exe` once — see `probes/probe65_bspline_roundtrip.cs`): try anything unproven on a **scratch copy** of a document (`probes/probe23_backup_copy.cs`, then `open_document` the copy), never on a file that matters, and open a user's reference file only read-only (`probes/probe56_open_readonly.cs`) and close it without saving. And a tool that drives SolidWorks' *user interface* (`SolidPilotBridge.Tools/InProc/`, in-process only) must resolve everything before its first UI action, verify each step against the model, click only windows of the SolidWorks process, write every setting explicitly, and always leave the UI as it found it — `convert-tests.ps1` is the template.
+
 **Standalone exe (fallback)** — the original out-of-process host. Build:
 
 ```

@@ -574,9 +574,19 @@ def add_edge_feature(
     angle: Annotated[float, Field(gt=0, lt=90, description="Chamfer angle in DEGREES (distance_angle mode only; default 45)")] = 45.0,
     distance2: Annotated[float, Field(ge=0, description="Chamfer SECOND-face setback (D2) in METERS (distance_distance mode only; must be > 0 there)")] = 0.0,
     chamfer_flip: bool = False,
+    radii: str = "",
+    points: str = "",
 ) -> str:
     """Apply a 3D edge modifier to solid body edges (post-extrusion). Distinct from sketch fillet/chamfer.
     feature_type='fillet': rounds selected edge(s) with given radius_or_distance.
+    MULTIPLE-RADIUS FILLET (fillet only): radii = '[r1, r2, ...]' METERS, ONE PER EDGE in the order the edges are
+      listed (edge_indices first, then points / edges_json) -> ONE Fillet feature with a radius of its own per edge
+      (the Fillet PropertyManager's "Multiple radius fillet"; a fillet cannot be mirrored, so corners that need
+      different radii - the 12 outline corners of an unfolded blank - are one feature). radius_or_distance is
+      ignored then (pass the first radius). points = '[[x,y,z], ...]': a point ON each edge (meters; any curve type; a
+      point that lies on two edges is refused: EDGE_AMBIGUOUS - use the middle of the edge or the index). The
+      feature is read back edge by edge. Returns {feature, edges, multi_radius, edges_in_feature,
+      radii_read_back[{mid, radius}], problems[], feature_error, verified}.
     feature_type='chamfer': cuts a chamfer on selected edge(s). Two modes via chamfer_type:
       - 'distance_angle' (default): radius_or_distance = setback (D1), angle = the chamfer angle in DEGREES
         (default 45 → the classic equal 45° chamfer). angle is ignored in the other mode.
@@ -597,6 +607,10 @@ def add_edge_feature(
     }
     if edge_indices:
         params["edge_indices"] = edge_indices
+    if radii:
+        params["radii"] = json.loads(radii)
+        if points:
+            params["points"] = json.loads(points)
     if feature_type == "chamfer":
         params["chamfer_type"] = chamfer_type
         params["angle"] = angle
@@ -1971,6 +1985,88 @@ def sheet_metal_miter_flange(
 
 
 # ---------------------------------------------------------------------------
+# Tool: sheet_metal_convert   (IN-PROCESS HOST ONLY)
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_convert(
+    fixed_face: str,
+    thickness: float,
+    bend_radius: float,
+    bend_edges: str = "",
+    rip_sketches: str = "",
+    steps: str = "",
+    reverse_thickness: Literal["default", "on", "off"] = "default",
+    keep_body: Optional[bool] = None,
+    corner: Literal["", "butt", "overlap", "underlap"] = "",
+    corner_timing: Literal["late", "early"] = "late",
+    rip_gap: Optional[float] = None,
+    overlap_ratio: Optional[float] = None,
+    relief: Literal["", "rectangular", "obround", "tear"] = "",
+    relief_ratio: Optional[float] = None,
+    k_factor: Optional[float] = None,
+    views: str = "",
+    hide_other_bodies: bool = True,
+    accept: bool = True,
+) -> str:
+    """CONVERT TO SHEET METAL of a surface (or solid) body, done the way a user does it - the API cannot create this
+    feature - but driven from INSIDE SolidWorks in ONE call (in-process host only). Lengths METERS.
+    SELECTION ORDER MATTERS and is kept exactly: the fixed face first, then the lists in the order of `steps`. The
+    recipe for a rim-and-lip enclosure: (1) the bend edges NEAREST the fixed face (the back plate's perimeter),
+    (2) the rip sketches, (3) the next bend series (rim outer edges), (4) the third series (lip root edges).
+    fixed_face = '[x,y,z]': a point ON the face that stays put.
+    bend_edges = '[[x,y,z], ...]': one point ON each bend edge, in pick order (shorthand: bends, then rip_sketches).
+    rip_sketches = '["Sketch30", ...]': names of existing sketches, one line each, ending at the body's vertices.
+    steps = '[{"list":"bend","edges":[[x,y,z],...]},{"list":"rip","sketches":["Sketch30",...]},{"list":"bend",...}]':
+        the full ordered recipe (use it when bends and rips interleave); overrides bend_edges / rip_sketches.
+    Settings go into the PropertyManager's own controls and are write-verified against the created feature.
+        thickness and bend_radius are REQUIRED (SolidWorks remembers the PropertyManager's last values, so a call must
+        not lean on them). Whatever else you leave out takes the PropertyManager's FACTORY default and is written
+        explicitly, so a call never depends on the previous one: reverse_thickness 'default' = 'on' (the material goes
+        OUTSIDE the surface - offset the surface inward by one thickness first to keep the outer size; 'off' keeps the
+        surface as the outer skin), keep_body false, corner 'butt' (| 'overlap' | 'underlap') with rip_gap 0.002 and
+        overlap_ratio 0.5, relief 'rectangular' (| 'obround' | 'tear'). Two settings are NOT PropertyManager boxes and
+        are applied to the created feature afterwards (and read back): relief_ratio (rectangular / tear only; left out =
+        the document template's) and k_factor (the global K).
+        corner_timing 'late' (default) sets the requested corner group AFTER the picks (the neutral Butt corner is on
+        while they are made) - with 'early' SolidWorks raises 'Overlaps/underlaps could not be applied to all rips'
+        while rip sketches are added (a watchdog answers it).
+    views = '["*Isometric","*Back", ...]': the views the picker may try (default: the current one, then the standard
+        ones); hide_other_bodies (default True) hides every other body while picking and shows it again.
+    accept=False leaves the PropertyManager open with the lists filled (debugging).
+    Returns {accepted, feature, feature_error, lists{bend_edges, rip_sketches, rip_edges_found}, definition{...},
+        picks[{target, list, mid, view, pixel, clearance_px}] (in the order they were made), sheet_metal{...},
+        problems[], verified}. Bumps state_version.
+    Clicks are only ever posted to SolidWorks' own graphics window: when a window of another application covers the
+    graphics area the call stops with GRAPHICS_COVERED (nothing is clicked; bring SolidWorks to the front).
+    Errors (nothing is left open): MISSING_PARAMETER, FACE_NOT_FOUND, EDGE_NOT_FOUND (also 'ambiguous'),
+        SKETCH_NOT_FOUND, BEND_ZONES_DO_NOT_FIT (two bends closer than 2 x (radius + thickness), or a flange shorter
+        than radius + thickness: SolidWorks would fail the build and its OK handler can hang), PM_ALREADY_OPEN,
+        DIALOG_BLOCKING, PM_NOT_OPENED, GRAPHICS_COVERED, WRONG_PICK, NOT_PICKABLE, PM_DIALOG, CONVERT_FAILED
+        (rebuild error: the command is cancelled), PM_STUCK, NOT_CREATED."""
+    params: dict = {"fixed_face": json.loads(fixed_face) if fixed_face.strip().startswith(("[", "{")) else fixed_face,
+                    "reverse_thickness": reverse_thickness, "corner_timing": corner_timing,
+                    "hide_other_bodies": hide_other_bodies, "accept": accept}
+    if steps:
+        params["steps"] = json.loads(steps)
+    else:
+        if bend_edges:
+            params["bend_edges"] = json.loads(bend_edges)
+        if rip_sketches:
+            params["rip_sketches"] = json.loads(rip_sketches)
+    if views:
+        params["views"] = json.loads(views)
+    if corner:
+        params["corner"] = corner
+    if relief:
+        params["relief"] = relief
+    for key, val in (("thickness", thickness), ("bend_radius", bend_radius), ("keep_body", keep_body), ("rip_gap", rip_gap),
+                     ("overlap_ratio", overlap_ratio), ("relief_ratio", relief_ratio), ("k_factor", k_factor)):
+        if val is not None:
+            params[key] = val
+    return _call("sheet_metal_convert", params)
+
+
+# ---------------------------------------------------------------------------
 # Tool: document_units
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
@@ -2052,6 +2148,181 @@ def sketch_center_rectangle(
     plane is selected by NAME, so it does not depend on the view. Errors: SKETCH_ALREADY_ACTIVE, PLANE_NOT_FOUND.
     Bumps state_version."""
     return _call("sketch_center_rectangle", {"width": width, "height": height, "plane": plane})
+
+
+# ---------------------------------------------------------------------------
+# Tool: delete_face
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def delete_face(faces: str) -> str:
+    """DELETE FACE(S): remove faces from a solid so it becomes an open SURFACE body - the first step of the base shape
+    of a rim-and-lip enclosure that is then offset (offset_surface) and converted (sheet_metal_convert). Lengths METERS.
+    faces = '[[x,y,z], ...]': one point ON each face to delete (the face nearest the point, within 0.1 mm). The faces
+    are selected as objects, never by a view pick. Plain Delete (IModelDoc.InsertDeleteFace; no patch / fill variant).
+    Returns {feature, faces_deleted, bodies_before{solid_bodies, surface_bodies}, bodies_after{...}, feature_error,
+    verified}. Bumps state_version. Errors: FACE_NOT_FOUND, SELECTION_FAILED, DELETE_FACE_FAILED."""
+    return _call("delete_face", {"faces": json.loads(faces)})
+
+
+# ---------------------------------------------------------------------------
+# Tool: offset_surface
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def offset_surface(
+    body_point: str,
+    distance: float,
+    direction: Literal["inward", "outward"] = "inward",
+    hide_original: bool = True,
+) -> str:
+    """OFFSET SURFACE of one surface body by `distance` METERS. The recipe for a converted rim-and-lip enclosure
+    offsets the outer skin INWARD by exactly one sheet thickness before sheet_metal_convert with reverse_thickness on
+    (which puts the material outside the surface), so the folded part keeps its outer size.
+    body_point = '[x,y,z]': a point ON the surface body (identifies the body). direction 'inward' (default) shrinks it,
+    'outward' grows it - the RESULT is measured and, if the API's Reverse flag went the other way for this body's
+    face orientation, the feature is deleted and redone once with the flag flipped.
+    hide_original (default True) hides the original body so the picks of the next steps hit the offset one.
+    Returns {feature, distance, direction, size_before, size_after, size_change, reverse_flag_flipped,
+    hidden_original, feature_error, verified}. Bumps state_version. Errors: FACE_NOT_FOUND, NOT_A_SURFACE_BODY
+    (delete_face makes one from a solid), OFFSET_FAILED."""
+    return _call("offset_surface", {"body_point": json.loads(body_point), "distance": distance, "direction": direction, "hide_original": hide_original})
+
+
+# ---------------------------------------------------------------------------
+# Tools: surface_extrude, surface_cut
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def surface_extrude(
+    depth: Annotated[float, Field(gt=0, le=1, description="Extrusion depth in METERS")],
+    sketch: str = "",
+    reverse: bool = False,
+    mid_plane: bool = False,
+) -> str:
+    """SURFACE EXTRUDE of a sketch: the (open or closed) profile is extruded `depth` METERS as a SURFACE body - a
+    ribbon for an open profile. Used with surface_cut to trim an unfolded sheet-metal blank (v4: a spline on a plane
+    one thickness above the plate, extruded 5 mm down through the sheet).
+    sketch = the sketch's name (default: the active sketch, which is exited). reverse=False extrudes along the sketch
+    plane's normal; True the other way (e.g. down through a plate whose top face carries the sketch). mid_plane=True
+    extrudes symmetrically about the sketch plane and `depth` is then the TOTAL width (v4's trim ribbon).
+    Returns {feature, sketch, depth, reverse, surface_bodies, surface_box, surface_size, problems[], feature_error,
+    verified}. Bumps state_version. Errors: MISSING_PARAMETER, SKETCH_NOT_FOUND, SELECTION_FAILED,
+    SURFACE_EXTRUDE_FAILED."""
+    params: dict = {"depth": depth, "reverse": reverse, "mid_plane": mid_plane}
+    if sketch:
+        params["sketch"] = sketch
+    return _call("surface_extrude", params)
+
+
+@mcp.tool(structured_output=False)
+def surface_cut(
+    surface: str,
+    flip: bool = False,
+    keep_piece: int = 0,
+    max_removed_volume: Optional[float] = None,
+) -> str:
+    """SURFACE CUT: cut the solid with a surface (the feature that made it, e.g. 'Surface-Extrude1'). A surface cut,
+    unlike a solid cut, can be MIRRORED (create_pattern mirror) - that is why the weld-tight corner trim of a
+    converted enclosure uses one.
+    flip=False removes the side the surface normal points to, flip=True the other side; which that is depends on the
+    sketch, so the tool MEASURES the volume it removed. max_removed_volume (m3) is the safety net: a wrong flip
+    removes the larger side, and when more than this is gone the feature is taken out again (CUT_REMOVED_TOO_MUCH).
+    A cut that removed nothing is refused too (NOTHING_CUT). keep_piece = the API's KeepPieceIndex (default 0).
+    Returns {feature, surface, flip, volume_before, volume_after, removed_volume (m3), feature_error, verified}.
+    Bumps state_version. Errors: MISSING_PARAMETER, FEATURE_NOT_FOUND, SELECTION_FAILED, SURFACE_CUT_FAILED,
+    NOTHING_CUT, CUT_REMOVED_TOO_MUCH."""
+    params: dict = {"surface": surface, "flip": flip, "keep_piece": keep_piece}
+    if max_removed_volume is not None:
+        params["max_removed_volume"] = max_removed_volume
+    return _call("surface_cut", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_fold
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_fold(
+    action: Literal["unfold", "fold"],
+    fixed_face: str,
+    bends: str = "all",
+) -> str:
+    """UNFOLD (flatten) or FOLD (bend back) the bends of the active sheet-metal part - the Unfold / Fold features,
+    done as the PropertyManager does: the FIXED face (selection mark 1) and the bends (mark 2) are selected as
+    objects, then InsertSheetMetalUnfold / Fold. Used to edit the flat blank in place (e.g. round its corners with
+    ONE multiple-radius fillet, or trim them with a surface cut) and fold the part back.
+    fixed_face = '[x,y,z]' (meters; a point ON the face that stays put - e.g. the back plate) or its index from
+    analyze_model(faces). Fold with the SAME fixed face you unfolded with.
+    bends = 'all' (default: every OneBend sub-feature of the part) or '["SharpBend1","SharpBend2", ...]' (names).
+    Returns {feature, action, bends_selected, bends_in_part, bends_in_feature, fixed_face_deviation, size_before,
+    size_after, flat (unfold of all bends: the thinnest extent equals the sheet thickness), problems[],
+    feature_error, verified}. Bumps state_version. Errors: MISSING_PARAMETER, FACE_NOT_FOUND, NO_BENDS,
+    BEND_NOT_FOUND, SELECTION_FAILED, FOLD_FAILED, NOT_SHEET_METAL."""
+    ft = fixed_face.strip()
+    return _call("sheet_metal_fold", {"action": action, "fixed_face": json.loads(ft) if ft.startswith("[") else ft,
+                                       "bends": json.loads(bends) if bends.strip().startswith("[") else bends})
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_from_flat
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_from_flat(
+    dxf_path: str,
+    thickness: Optional[float] = None,
+    bend_radius: Optional[float] = None,
+    k_factor: Optional[float] = None,
+    angle: float = 90.0,
+    units: str = "auto",
+    directions: str = "",
+    hidden_direction: Literal["up", "down"] = "up",
+    fixed_point: str = "",
+    tolerance: Optional[float] = None,
+    reach_tolerance: Optional[float] = None,
+    allow_unfoldable: bool = False,
+    keep_on_failure: bool = False,
+    plan_only: bool = False,
+) -> str:
+    """FOLD FROM FLAT: build a sheet-metal part from the flat pattern in an ASCII DXF - the inverse of the flat-pattern
+    export. The tool reads the outline (lines, arcs, splines, circles = holes) and the straight BEND LINES, cuts the
+    outline into regions along the bend lines, finds the region that stays put (the biggest, or the one under
+    fixed_point) and the TREE of bends that leads to every other region, then builds in the ACTIVE, EMPTY part: a base
+    flange from the outline, then SKETCHED BENDS - the OUTERMOST bends first (so every bend line is still in the flat
+    plane), one feature per (depth, direction). The flat is drawn on the Front Plane: the DXF x / y are the plane's
+    x / y; 'up' = the far side of a bend turns toward +Z, 'down' toward -Z. Lengths METERS.
+    dxf_path = the full path of the ASCII DXF. Units come from $INSUNITS (units='auto'); say units='mm'|'in'|'cm'|'m'|'ft'
+        when the file does not.
+    thickness, bend_radius = REQUIRED (the DXF does not say them) unless plan_only; k_factor default 0.5 (the flat
+        blank does not depend on it - sketched bends keep the flat length - the folded size does); angle default 90.
+    Direction of each bend: SolidWorks' own API export draws the two directions in two linetypes (HIDDEN =
+        hidden_direction, continuous = the other one); a DXF with ONE linetype (a UI export) says nothing, so every bend
+        folds up - pass directions = '["up","up","down"]' (one per DEPTH, innermost bend first) or '{"3":"down"}'.
+    What it REFUSES, before it creates anything: a sketched bend folds along the WHOLE line, so a flat only folds this
+        way when no region reaches across the line of a bend that is not its own. A flat with CLOSED corners (Convert
+        to Sheet Metal, closed-corner flanges: the neighbouring wall edges lie 0.3 - 2 mm past the bend line) is refused
+        with BEND_NOT_FOLDABLE and the measured reach: such a part needs corner reliefs wider than the bend zone, or a
+        part built with flanges / Convert. (allow_unfoldable=True tries anyway.) reach_tolerance (default 0.05 mm)
+        is how far a region may reach; tolerance (default 0.01 mm) joins end points.
+    fixed_point = '[x, y]' (meters, DXF coordinates x units): a point of the region that stays put.
+    A build that fails half way (SolidWorks refuses a bend) takes its own features out again - the part is empty
+    as it was - and says so in the error; keep_on_failure=True keeps them for a look.
+    plan_only=True reads and plans only (no document needed): returns {units, outline{pieces, kinds, holes, box, size},
+        bends[{from, to, length, linetype, depth, direction, near_region, far_region}], regions[], fixed_point,
+        build_order[{depth, direction, bends[]}], warnings[]}.
+    A build returns {plan, steps[], features[], bends, bends_expected, flat_size, dxf_size, flat_deviation, folded_size,
+    problems[], verified}: the part's OWN flat pattern must have the size of the DXF outline and the part the bends
+    of the DXF. Bumps state_version. Errors: MISSING_PARAMETER, FILE_NOT_FOUND, DXF_UNREADABLE, DXF_INVALID,
+    DXF_BINARY, UNITS_UNKNOWN, NO_OUTLINE, OPEN_OUTLINE, AMBIGUOUS_OUTLINE, MULTIPLE_PARTS, UNSUPPORTED_BEND_LINE,
+    BEND_LINE_NOT_ON_OUTLINE, BEND_GRAPH_NOT_A_TREE, BEND_NOT_FOLDABLE, FIXED_POINT_OUTSIDE, INVALID_PARAMETER,
+    NOT_EMPTY_PART, WRONG_DOCUMENT_TYPE, BUILD_STEP_FAILED."""
+    params: dict = {"dxf_path": dxf_path, "angle": angle, "units": units, "hidden_direction": hidden_direction,
+                    "allow_unfoldable": allow_unfoldable, "keep_on_failure": keep_on_failure, "plan_only": plan_only}
+    for key, val in (("thickness", thickness), ("bend_radius", bend_radius), ("k_factor", k_factor),
+                     ("tolerance", tolerance), ("reach_tolerance", reach_tolerance)):
+        if val is not None:
+            params[key] = val
+    if directions.strip():
+        params["directions"] = json.loads(directions) if directions.strip()[0] in "[{" else directions
+    if fixed_point.strip():
+        params["fixed_point"] = json.loads(fixed_point) if fixed_point.strip().startswith("[") else fixed_point
+    return _call("sheet_metal_from_flat", params)
 
 
 # ---------------------------------------------------------------------------

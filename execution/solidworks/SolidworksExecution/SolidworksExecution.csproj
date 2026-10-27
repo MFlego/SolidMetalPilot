@@ -108,6 +108,11 @@
     <Compile Include="Services\SolidWorksService.TypedControl.cs" />
     <Compile Include="Services\SolidWorksService.SheetMetalForms.cs" />
     <Compile Include="Services\SolidWorksService.Parametric.cs" />
+    <Compile Include="Services\SolidWorksService.SurfacePrep.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalFold.cs" />
+    <Compile Include="Services\SolidWorksService.FilletMulti.cs" />
+    <Compile Include="Services\SolidWorksService.SurfaceFeatures.cs" />
+    <Compile Include="Services\SolidWorksService.FromFlat.cs" />
     <Compile Include="Services\ToolDispatcher.cs" />
     <Compile Include="Startup.cs" />
   </ItemGroup>

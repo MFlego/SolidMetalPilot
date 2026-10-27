@@ -28,7 +28,10 @@ namespace SolidPilot.Bridge
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr h, StringBuilder s, int n);
         [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr h, int index);
         private const uint BM_CLICK = 0x00F5;
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_NOACTIVATE = 0x08000000;
 
 
         /// <summary>Text of Task-Dialog style message boxes lives in a DirectUI control that GetWindowText cannot read; UI Automation exposes it as Text elements.
@@ -61,6 +64,12 @@ namespace SolidPilot.Bridge
         private static bool IsSkeleton(DialogInfo d) { return d.Buttons.Count == 0 && d.Text.Count > 0 && d.Text.TrueForAll(t => TemplateTexts.Contains(t)); }
         private static void NoteSkeleton(long handle) { lock (SkeletonsSeen) { if (SkeletonsSeen.Add(handle)) BridgeLog.Info("ignoring skeleton Task-Dialog window " + handle + " (template text only, no buttons)"); } }
 
+        // SolidWorks shows its "Rebuild Errors" callout (and similar balloons) as a top-level WPF window: layered, tool-window, WS_EX_NOACTIVATE, no buttons, owned by the main frame. It is a tooltip
+        // that cannot take focus and nobody can or must answer - but it was counted as a modal dialog, so the gate refused EVERY call (DIALOG_BLOCKING) while a failed Convert to Sheet Metal showed
+        // one, and the PropertyManager behind it could not even be cancelled through the gate (2026-10-27). A dialog can be activated; a balloon cannot.
+        private static readonly HashSet<long> BalloonsSeen = new HashSet<long>();
+        private static void NoteBalloon(long handle, string cls) { lock (BalloonsSeen) { if (BalloonsSeen.Add(handle)) BridgeLog.Info("ignoring balloon window " + handle + " (" + cls + ": no-activate popup without buttons)"); } }
+
         /// <summary>Visible top-level dialogs of THIS process (standard #32770 dialogs and WPF HwndWrapper message boxes), never the main SolidWorks window.</summary>
         public static List<DialogInfo> List()
         {
@@ -80,6 +89,7 @@ namespace SolidPilot.Bridge
                     else if (cc == "Static" || cc.StartsWith("Edit", StringComparison.Ordinal)) d.Text.Add(t);
                     return true;
                 }, IntPtr.Zero);
+                if (d.Buttons.Count == 0 && (GetWindowLong(h, GWL_EXSTYLE) & WS_EX_NOACTIVATE) != 0) { NoteBalloon(d.Handle, cls); return true; }      // before the (slow) UI Automation text read
                 if (d.Text.Count == 0) d.Text.AddRange(UiaTexts(h));
                 if (IsSkeleton(d)) { NoteSkeleton(d.Handle); return true; }
                 res.Add(d); return true;

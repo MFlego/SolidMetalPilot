@@ -44,6 +44,14 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <!-- WPF: SolidWorks builds several PropertyManagers (Convert to Sheet Metal ...) as WPF controls in its own process; the in-process-only tools (InProc\) reach them directly -->
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="UIAutomationProvider" />
+    <Reference Include="UIAutomationTypes" />
     <Reference Include="Newtonsoft.Json">
       <HintPath>..\packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
       <Private>True</Private>
@@ -55,6 +63,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ToolsHost.cs" />
+    <!-- tools that exist only in the in-process host (not compiled by the out-of-process exe) -->
+    <Compile Include="InProc\*.cs" />
     <!-- the shared tool code, linked (never copied) -->
     <Compile Include="$(ExecDir)\Services\*.cs"><Link>Shared\Services\%(Filename)%(Extension)</Link></Compile>
     <Compile Include="$(ExecDir)\Models\*.cs"><Link>Shared\Models\%(Filename)%(Extension)</Link></Compile>

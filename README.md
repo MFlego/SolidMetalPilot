@@ -51,7 +51,7 @@ flowchart TD
     U(["User + AI client<br/>Claude · OpenClaw · OpenAI · local LLM"])
 
     subgraph ADAPT["adapters/* — MCP bridge · MCP BOUNDARY = top"]
-        LOW["57 low-level tools<br/>sketch · extrude · sheet-metal · parametric · drawing · assembly · analyze"]
+        LOW["64 low-level tools<br/>sketch · extrude · sheet-metal · parametric · drawing · assembly · analyze"]
         RIR["rebuild_from_ir · save_analysis · compare_parts/assemblies"]
         SFG["submit_feature_graph<br/>forward single tool"]
     end
@@ -165,6 +165,20 @@ Because the tools share a process with the user's work, nothing runs blindly. A 
 - **Crash forensics.** The request being executed is written to `%LOCALAPPDATA%\SolidPilot\inflight.txt` before the call and removed after it. If SolidWorks dies mid-call, the next start reports exactly which call it was (in `/health` and in `bridge.log`).
 - **Localhost only.** The façade binds to `localhost`. A browser must never be able to drive CAD, so a request carrying an `Origin` header (CSRF), a foreign `Host` header (DNS rebinding) or a non-JSON content type on POST is refused.
 
+### Driving SolidWorks' own user interface from inside
+
+Some SolidWorks features cannot be created through the API at all — *Convert to Sheet Metal* is the one that matters here: `CreateFeature` returns `null`, `InsertConvertToSheetMetal2` half-builds on a surface body, and the PropertyManager's bend and rip lists can be filled only by genuine picks. Out of process that meant keyboard and mouse automation. In process there is a better route, because SolidWorks 2026 builds that PropertyManager as a **WPF control in its own process**: from the add-in its visual tree is a plain object graph, and its buttons, check boxes, numeric boxes and lists can be read and driven through the very automation peers UI Automation would use — without a UI Automation client (which, from outside, cost ~55 s to locate the lists and deadlocks when called from the UI thread).
+
+`sheet_metal_convert` therefore does what a person does, in **one gate call**: preselect the fixed face, start the command, fill the lists with picks **in the exact order given** (selection order is part of the recipe), write the settings into the PropertyManager's own boxes, press OK — and read the created feature back. How it stays safe:
+
+- **Everything is resolved before the first UI action** (face, edges, rip sketches, settings, a geometric pre-check that the bends fit: two parallel bends need 2 × (radius + thickness) between them, a flange must be longer than radius + thickness). A request that cannot work is refused with the numbers and **nothing is opened**.
+- **A pick is a posted mouse message** at a pixel computed from the view transform, chosen where the edge is farthest from every other edge on screen, and **verified twice**: the list must grow by one *and* the selection manager's newest entry must be the intended edge or sketch — a wrong pick cancels the whole command. The user's cursor and focus are not touched.
+- **Clicks only ever go to SolidWorks' own windows.** If a window of another application covers the graphics area, the call stops with `GRAPHICS_COVERED` (and `ui_inspect post_click` with `FOREIGN_WINDOW`); nothing is clicked. `tests/convert-tests.ps1 -Cover` proves it by putting a top-most window over the view and checking that it receives no click.
+- **No dependence on what SolidWorks remembers.** The PropertyManager remembers its last values; the tool requires `thickness` and `bend_radius` and writes *every* other setting explicitly (the factory default when the request says nothing), so one call never inherits another's state.
+- **Dialogs and hangs.** A watchdog thread answers information boxes raised *inside* a click (the nested modal loop would otherwise stop the tool); a dialog that needs a decision is a failure. If the gate gives up on a call (`STA_TIMEOUT`), the tool notices at its next wait, cancels the PropertyManager and stops. The PropertyManager is **always** closed again (OK on success, Cancel on any failure) and hidden bodies are shown again.
+
+`ui_inspect` is the exploration face of the same layer (list the WPF windows, dump a visual tree, drive one control, project model points to screen pixels). It exists only in process.
+
 ### The development loop, the pipe and the script runner
 
 ```
@@ -172,7 +186,7 @@ powershell -File execution\solidworks\SolidPilotBridge\deploy-bridge.ps1 -ToolsO
 powershell -File execution\solidworks\SolidPilotBridge\bridge-ping.ps1 -Command reload_tools  # swap them in: generation +1, nothing else changes
 ```
 
-Besides REST, the add-in serves a per-user named pipe, `\\.\pipe\SolidPilotBridge` (one command per line, one reply line): `ping`, `state`, `activeDoc`, `dialogs`, `dialog_respond <button>`, `selection`, `events`, `log`, `windows`, `post_click`, `tools_info`, `reload_tools`, `tool <json>`, `pause`, `resume`, `activity`, `gate_timeout`, `snapshots`, `snapshot_now`, `snapshot_policy <seconds|off>`, and **`run_cs <file.cs>`** — compile a C# snippet *inside* SolidWorks and run it against the live API, with no build and no restart. The [`probes/`](execution/solidworks/SolidPilotBridge/probes) folder holds about fifty such probes: the research behind every API fact in [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt). `tests/tool-call.ps1` calls any tool from PowerShell (`tool-call.ps1 feature_data '{"action":"list"}'`).
+Besides REST, the add-in serves a per-user named pipe, `\\.\pipe\SolidPilotBridge` (one command per line, one reply line): `ping`, `state`, `activeDoc`, `dialogs`, `dialog_respond <button>`, `selection`, `events`, `log`, `windows`, `post_click`, `tools_info`, `reload_tools`, `tool <json>`, `pause`, `resume`, `activity`, `gate_timeout`, `snapshots`, `snapshot_now`, `snapshot_policy <seconds|off>`, and **`run_cs <file.cs>`** — compile a C# snippet *inside* SolidWorks and run it against the live API, with no build and no restart. The [`probes/`](execution/solidworks/SolidPilotBridge/probes) folder holds about sixty such probes: the research behind every API fact in [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt). `tests/tool-call.ps1` calls any tool from PowerShell (`tool-call.ps1 feature_data '{"action":"list"}'`).
 
 ### Configuration
 
@@ -201,6 +215,10 @@ The add-in made it practical to test CAD behaviour automatically. All of these n
 | `bridge-tests.ps1` | The pipe protocol, dialog handling, the script runner, and the gate against a real modal dialog (`DIALOG_BLOCKING`, recovery). |
 | `inproc-stress.ps1` | REST security (Origin / Host / content type), parallel calls, pause / resume, call timeouts, crash forensics, events, tools hot reload (needs a Debug tools build for its fault-injection hooks). |
 | `typed-control-tests.ps1` · `forming-tests.ps1` · `parametric-tests.ps1` | The sheet-metal tools against geometry and numbers, not against `COMPLETED`: flat blanks, K-factor, corners, hems, mitre flanges, units, equations, the NEMA cabinet and a lid as a second body. |
+| `convert-tests.ps1` | Convert to Sheet Metal driven from inside SolidWorks: every setting reaches the feature, sizes and flat blanks equal their closed forms, the **order of the picks** is the request's order, refusals happen before anything opens, a dialog inside a click is answered, an abandoned call cancels the PropertyManager, defaults never leak between calls, and (`-Cover`) a foreign window over the view is never clicked. |
+| `flat-edit-tests.ps1` | Editing a part in its flat state: unfold / fold (closed-form blanks, partial unfolds, repeated calls refused), the multi-radius fillet (volume removed = Σ (1 − π/4) r² h), surface extrude + surface cut (exact volumes, a wrong flip taken out again), a surface cut mirrored. |
+| `v4-tests.ps1` | The user's v4 enclosure rebuilt with tools in the user's own recipe, against numbers measured on the reference (and, with `-Reference <v4.SLDPRT>`, its flat DXF compared entity by entity); and the *intended* 16 ga set through the same pipeline with the corner trim mapped onto its corner chord and the seam gaps measured (V04). |
+| `fromflat-tests.ps1` | **Fold from flat**: the plan read from a DXF (lines, arcs, holes, hidden / continuous bend lines, units, chords between outline corners), every unfoldable flat refused with the reason before anything is created, and the built parts against their closed forms - a tray, an L bracket, a C channel, a hat - including the part's own flat pattern (exact area, bounding box, and its DXF export equal to the input), and a failed build taken back to the empty part. The flats are written by the tests. |
 | `doc-soak.ps1` | Does a long agent session leak SolidWorks resources? (Handles, memory, GDI and USER objects per build cycle.) |
 | `e2e_adapter.py` | The real Python adapter and compiler against the façade: IR build → analyze → save → rebuild → `compare_parts`. |
 | `inproc-parity.ps1` · `shell-harness.ps1` · `exec-layer-tests.ps1` | Parity between the two hosts; hosting the shell stack out-of-process to test it before a SolidWorks restart; the safety executor's unit tests (offline). |
@@ -216,7 +234,7 @@ Running in-process turns sheet metal from "drive the wizard and hope" into somet
 - **The numbers come from SolidWorks, not from a prediction.** The flat blank size, the cutting length and the bend count are read live from the cut-list item without unsuppressing the flat pattern, and the flat DXF is written in the document's own unit.
 - **Parametric from the first call.** `document_units`, `equations` and `sketch_center_rectangle` make a part variable-driven from tools alone; every dimension that matters can be tied to a named variable.
 
-Covered today: base, edge and **mitre flanges** (one wall, or a multi-segment wall + rim + return-lip profile that is itself fully dimensioned), hems (open, closed, tear-drop, rolled), break corners, closed corners, global and per-bend K-factor, auto relief, flat-pattern options, a direct flat DXF, and typed read/write of *any* feature's definition (`feature_data`).
+Covered today: base, edge and **mitre flanges** (one wall, or a multi-segment wall + rim + return-lip profile that is itself fully dimensioned), hems (open, closed, tear-drop, rolled), break corners, closed corners, global and per-bend K-factor, auto relief, flat-pattern options, a direct flat DXF, and typed read/write of *any* feature's definition (`feature_data`) — and, for parts that are **converted** instead of built from flanges: *Delete Face* and *Offset Surface* to prepare the base shape, **Convert to Sheet Metal** driven from inside SolidWorks (see [above](#driving-solidworks-own-user-interface-from-inside)), **Unfold / Fold**, a **multiple-radius fillet** as one feature, **surface extrude / surface cut** and mirror (the corner-trim toolkit).
 
 **Worked proof — a NEMA cabinet body from tools alone.** A 12 × 18 in plate and **one** mitre flange along its four edges (wall + rim + return lip), eight variables (`BoxWidth`, `BoxHeight`, `SheetThickness`, `InsideRadius`, `KFactor`, `WallHeight`, `LipLength`, `ReturnLip`) driving it. Against the same part modelled by hand in SolidWorks:
 
@@ -229,7 +247,31 @@ Covered today: base, edge and **mitre flanges** (one wall, or a multi-segment wa
 
 It re-sizes through its variables (wall 5 in → 5.56 in deep and a blank 2 in larger; 14 gauge and back restores the exact numbers), the flat DXF is written in inches, and a lid added as a second sheet-metal body in the same part leaves the cabinet unchanged (`tests/parametric-tests.ps1`).
 
-**What the API itself cannot do** — measured, and identical in and out of process: create a *Convert to Sheet Metal* feature, write a Convert feature's bend list, set a gauge-table path, or create a Move Face. Those need the user interface (Convert's PropertyManager is driven by posted mouse messages and UI Automation) and are on the [Roadmap](#roadmap). The evidence for everything on this page: [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt).
+**Worked proof 2 — the user's v4 enclosure, rebuilt with the user's own recipe.** A rim-and-lip cabinet whose rim is **1.00 in on the 12 in sides and 0.75 in top and bottom** (differential flanges), which a mitre flange cannot make — one profile is swept round the whole loop — so it is *converted*: a 12 × 18 × 4 in box with a 0.5 in lip block, its open face deleted, the surface offset inward by one thickness, four diagonal rip sketches, **Convert to Sheet Metal** with the 12 bend edges picked **in the order the user stored in the reference**, then Unfold → **one** multi-radius fillet on the twelve outline corners (10 / 15 / 5 mm) → a spline corner trim (surface extrude + surface cut + mirrors) → Fold → flat pattern and DXF. Measured read-only on the user's v4 file and compared with the tool-built part (`tests/v4-tests.ps1`):
+
+| | rebuilt by tools | the user's v4 |
+|---|---|---|
+| feature sequence | box, lip, delete face, offset, 4 rips, Convert, Unfold, Fillet, trim sketch, Surface-Extrude, Surface Cut, Mirror, Fold, Flat-Pattern | identical |
+| flat blank (mm) | 571.214 × 710.914 (closed form: 2 × (W/2 + D + rim + lip − 4t − 6r + 3·BA)) | 571.214 × 710.914 |
+| bends · folded size (mm) | 12 · 304.8 × 457.2 × 114.3 | 12 · 304.8 × 457.2 × 114.3 |
+| outline corners rounded | 12, at the reference positions to 4 µm | 12 |
+| outer cutting length (mm) · mass | 2497.89 · 533.71 | 2497.89 · 533.71 |
+| flat DXF | 90 entities; every line and arc identical; the 12 splines at the same places | 90 entities |
+
+Two honest notes. The user's file uses t = 1.6 mm, r = 3 mm, K = 0.5 and a 4 in box, while the cabinet they describe as *intended* is 16 ga (1.524 mm), r = 3 t, K = 0.45 and 3.25 in + 0.5 in lip. The whole pipeline runs for the intended set too (`v4-tests.ps1` V04), but the **corner trim is a hand-tuned spline** that belongs to one set of corner geometry: for a new set it is the user's curve *normalised on the corner chord* (the exact unrolled mitre, one bend allowance wide and 0.75 (r + t) deep) and mapped onto the new chord, and it is accepted by a measured criterion - after the fold every distance between the faces at the seam stays at least 0.027 mm (the design gap is 0.03 mm; the untrimmed corner pinches to 0.009 mm and grows a 0.013 mm² sliver face; half the depth still pinches to 0.020 mm). Whether that criterion is the user's meaning of weld-tight is a question for them. And the reference reaches all four trimmed corners with a single mirror feature whose cause is not understood; two mirrors (Right, then Top) give the same four trims.
+
+### Fold from flat
+
+`sheet_metal_from_flat` is the inverse of the flat-pattern export: give it an ASCII DXF and an empty part, and it builds the folded part. It reads the **outline** (lines, arcs, splines, polylines; circles are holes) and the straight **bend lines** (HIDDEN lines, and continuous lines that hang off the outline or join two outline corners), cuts the outline into **regions** along the bend lines, finds the region that stays put (the biggest, or the one under `fixed_point`) and the **tree of bends** that leads to every other region, and builds on the Front Plane: a base flange from the outline, then **sketched bends - the outermost first**, so that every bend line is still in the flat plane when its turn comes, one feature per (depth, direction). The DXF does not say the thickness, the radius or the K-factor, so the caller does; the flat blank does not depend on K (sketched bends keep the flat length), the folded size does.
+
+Two things were learned on the way, and both are enforced:
+
+- **SolidWorks folds a sketched bend along the whole (infinite) line**, however short the sketched segment is (a 20 mm line bends a 60 mm blank across its full 60 mm). So a flat only folds this way when no region reaches across the line of a bend that is not its own. The plan measures that **before it creates anything** and refuses with `BEND_NOT_FOLDABLE` and the reach in millimetres. The flats of Convert to Sheet Metal and of closed-corner flanges - including the NEMA cabinets of this project - are exactly such flats: their wall edges lie 0.3 to 2 mm past the neighbouring bend line, and SolidWorks fails the second wall (measured: the first pair of walls folds, the second returns nothing). They need corner reliefs wider than the bend zone, or a part built with flanges or Convert.
+- **Direction.** SolidWorks' own API export draws the two bend directions in two linetypes (HIDDEN and continuous); a DXF saved from the user interface draws every bend the same way and says nothing. `hidden_direction` says what HIDDEN means, and `directions` (one `up` / `down` per depth, innermost first) says it outright - for a cabinet with a lip that turns back, `["up","up","down"]`.
+
+A build that SolidWorks refuses half way (a bend that returns nothing, a feature left with a rebuild error) is **taken back**: the part is empty again and the error says so (`keep_on_failure` keeps the half-built part for a look). The closed-loop proof is built in: the part's **own flat pattern** must have the size of the DXF outline, and the part the bends of the DXF; the tests go further (exact volume = area × thickness with arcs and a hole, and the flat DXF of the built part equals the input DXF). Details and the measurements: [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt), section 9.
+
+**What the API itself cannot do** — measured, and identical in and out of process: create a *Convert to Sheet Metal* feature, write a Convert feature's bend list, set a gauge-table path, or create a Move Face. Convert is now done through the user interface from inside the add-in; the gauge table and Move Face are still open. The evidence for everything on this page: [SHEETMETAL-FINDINGS.txt](execution/solidworks/SolidPilotBridge/SHEETMETAL-FINDINGS.txt).
 
 ---
 
@@ -245,7 +287,7 @@ Two habits make the system useful on real, ambiguous input — a vendor PDF, a p
 
 ## Tool List
 
-The system currently exposes **57 tools** for *doing* and **13 MCP resources** for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `submit_feature_graph`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. All lengths are in meters (SolidWorks internal units).
+The system currently exposes **64 tools** for *doing* (plus `ui_inspect`, an in-process-only diagnostic for SolidWorks' own user interface) and **13 MCP resources** for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `submit_feature_graph`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. All lengths are in meters (SolidWorks internal units).
 
 The **resources** carry the rule set and the contracts, not behaviour: `recipe://usage/index` plus one static `recipe://usage/<section>` per rule section, and `schema://feature-graph` + `schema://analysis-artifact`. The split is deliberate — a tool's description is paid on every single turn whether or not it is used, while a resource body costs only when read, so near-static reference material belongs on the resource side.
 
@@ -266,16 +308,23 @@ The **resources** carry the rule set and the contracts, not behaviour: `recipe:/
 
 ### Feature and solid modeling
 - `extrude_feature` — boss, cut, revolve, sweep, loft.
-- `add_edge_feature` — fillet or chamfer on a solid edge (chamfer: distance-angle at any angle, or distance-distance).
+- `add_edge_feature` — fillet or chamfer on a solid edge (chamfer: distance-angle at any angle, or distance-distance). With `radii` (one per edge) the fillet is **one multiple-radius feature**: edges are found by geometry, a point on a corner is refused, and the feature is read back edge by edge.
+- `delete_face` — Delete Face (a solid whose face is deleted becomes a surface body): the first step of a base shape that will be converted.
+- `offset_surface` — Offset Surface of a surface body, inward or outward by an exact distance; the result is measured and, if the API's flag went the other way for this body, redone once flipped.
+- `surface_extrude` — a sketch (open or closed) extruded as a surface, one-sided, reversed or mid-plane: a ribbon for an open profile.
+- `surface_cut` — cut the solid with a surface; the volume it removed is measured, a cut that removed nothing is refused and `max_removed_volume` guards against a wrong flip (the feature is taken out again).
 - `create_rib` — rib feature from an open sketch profile.
 - `add_reference_geometry` — reference plane, axis, or point.
-- `create_pattern` — linear or circular pattern.
+- `create_pattern` — linear, circular or **mirror** pattern (a mirror takes any features by name, surface cuts included).
 - `sheet_metal_feature` — sheet metal: base_flange, edge_flange (incl. custom-profile flanges), sketched_bend, flat_pattern.
 - `sheet_metal_params` — the part's whole sheet-metal state in one read, and the call sequences that really set the global K-factor / bend allowance, auto relief, thickness and bend radius.
 - `sheet_metal_corners` — Closed Corner features through the API (no UI), configured and read back.
 - `sheet_metal_hem` — closed / open / tear-drop / rolled hems on free edges (one feature for many edges), definition read back.
 - `sheet_metal_break_corner` — fillet or chamfer the corners of flange walls (Break-Corner).
 - `sheet_metal_miter_flange` — ONE mitre flange along an edge chain; a closed loop gives weld-tight mitred corners, and the profile sketch is generated for you — a single wall (`height` + `angle`) or a multi-segment `profile_points` polyline (wall + rim + return lip) that is fully dimensioned so equations can drive it.
+- `sheet_metal_convert` — **Convert to Sheet Metal** of a surface (or solid) body, driven through the PropertyManager from inside SolidWorks in one call (in-process host only; see [above](#driving-solidworks-own-user-interface-from-inside)): the fixed face, the bend edges and rip sketches **picked in the order given**, every setting written explicitly and read back from the created feature (`thickness` and `bend_radius` are required; `relief_ratio` and `k_factor` are applied to the feature afterwards).
+- `sheet_metal_fold` — **Unfold** (flatten) or **Fold** (bend back) all or named bends with a chosen fixed face — edit the flat blank in place (round its corners, trim them) and fold the part back.
+- `sheet_metal_from_flat` — **Fold from flat**: a sheet-metal part built from the flat pattern in an ASCII DXF (outline + bend lines → base flange + sketched bends, outermost first), refusing the flats that SolidWorks cannot fold along their bend lines (see [below](#fold-from-flat)); `plan_only` reads and plans without a document.
 - `flat_pattern_control` — flat-pattern options, the flat blank's size, and a direct, non-interactive flat DXF export (in the document's unit).
 - `feature_data` — typed read/write of any feature's full definition (the SolidWorks `*FeatureData` interface) with write-verify: it reports which values SolidWorks actually kept.
 
@@ -363,7 +412,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File execution\solidworks\SolidPi
 **3. Start SolidWorks** — *SolidPilot Bridge* loads with it (tick it under *Tools ▸ Add-Ins* if it does not) — and check that the add-in answers:
 
 ```
-powershell -NoProfile -File execution\solidworks\SolidPilotBridge\bridge-ping.ps1 -Command ping     # pong v0.8
+powershell -NoProfile -File execution\solidworks\SolidPilotBridge\bridge-ping.ps1 -Command ping     # pong v0.9
 Invoke-RestMethod http://localhost:5000/health
 ```
 
@@ -423,11 +472,11 @@ Update the path to match your own system.
 
 SolidPilot is a **working prototype / early alpha**. The low-level tools have been verified end-to-end against live SolidWorks; in the default in-process host every call runs, one at a time, on SolidWorks' own UI thread behind the safety gate.
 
-**Execution architecture:** the biggest recent change. The execution layer moved from a separate process into SolidWorks itself — the **SolidPilot Bridge** add-in (see [In-process execution](#in-process-execution-the-solidpilot-bridge-add-in)). It is the default host (shell v0.8): stable where the out-of-process host crashed SolidWorks, typed and read-back-verified, hot-reloadable without a restart, and wrapped in a safety gate with automatic snapshots, a task pane (STOP / Resume / activity log) and crash forensics. The REST contract did not change, so the adapter, the compiler and the IR round trip run unmodified against either host, and the standalone exe remains as a fallback. Open points: the add-in is registered from the build output (there is no installer yet), and each automatic snapshot costs ~16 Windows handles inside SolidWorks (switchable).
+**Execution architecture:** the biggest recent change. The execution layer moved from a separate process into SolidWorks itself — the **SolidPilot Bridge** add-in (see [In-process execution](#in-process-execution-the-solidpilot-bridge-add-in)). It is the default host (shell v0.9): stable where the out-of-process host crashed SolidWorks, typed and read-back-verified, hot-reloadable without a restart, able to **drive SolidWorks' own user interface from inside** (Convert to Sheet Metal), and wrapped in a safety gate with automatic snapshots, a task pane (STOP / Resume / activity log) and crash forensics. The REST contract did not change, so the adapter, the compiler and the IR round trip run unmodified against either host, and the standalone exe remains as a fallback. Open points: the add-in is registered from the build output (there is no installer yet), and each automatic snapshot costs ~16 Windows handles inside SolidWorks (switchable).
 
 **Parts:** the part-modeling surface is the most mature — sketches, extrude/revolve/sweep/loft, fillets/chamfers, patterns, sheet metal, reference geometry, plus editing (`modify_dimension`, `edit_feature`) and rich analysis. Initially only the tools needed for part creation existed.
 
-**Sheet metal:** the most actively developed area, and the first to benefit from the in-process host — typed control of flanges (including a multi-segment **mitre flange** profile), hems, corners, K-factor, relief, the flat pattern and a direct flat DXF, with parametric building blocks (document units, equations, a fully defined master sketch) and live regression suites that check geometry and numbers rather than `COMPLETED` (see [Sheet-metal control](#sheet-metal-control-through-the-typed-api)). In progress: fold-from-flat, automated *Convert to Sheet Metal*, and the remaining sheet-metal features (see the [Roadmap](#roadmap)).
+**Sheet metal:** the most actively developed area, and the first to benefit from the in-process host — typed control of flanges (including a multi-segment **mitre flange** profile), hems, corners, K-factor, relief, the flat pattern and a direct flat DXF, with parametric building blocks (document units, equations, a fully defined master sketch) and live regression suites that check geometry and numbers rather than `COMPLETED` (see [Sheet-metal control](#sheet-metal-control-through-the-typed-api)). *Convert to Sheet Metal* now runs automated, from inside SolidWorks, and the user's differential-flange enclosure (v4) is rebuilt with tools and matches the reference file down to its flat DXF. In progress: fold-from-flat, a rule for the corner-trim curve when the sheet, radius or K change, and the remaining sheet-metal features (see the [Roadmap](#roadmap)).
 
 **Technical drawing:** added later and now a real (if still maturing) capability — multi-view drawings, section views, model-item auto-dimensioning, center marks, hole callouts, sheet-metal flat-pattern views, and a drawing reader. **Model → drawing** has been demonstrated on real production parts (a five-view dimensioned drawing incl. two orthogonal section views placed from analysis alone). Known limitation there: the auto-dimension pass is drafting-blind (it can omit or mis-place dimensions and dimension hidden edges) — a smarter dimensioning layer is on the roadmap.
 
@@ -461,7 +510,7 @@ The project is under active development. The Feature Graph IR and deterministic 
 
 Coming soon in existing areas:
 
-- **Sheet metal (in progress):** fold-from-flat (a flat pattern drawn as a base flange and folded with sketched bends, with unit tests); *Convert to Sheet Metal* automated in-process — the API cannot create it, so its PropertyManager is driven through the add-in — and the cabinet with differing rim widths as the end-to-end proof; and the remaining features (jog, gusset, tab and slot, swept flange, corner trim, rip, lofted bend), each probed against the live API and covered by a suite before it is called done.
+- **Sheet metal (in progress):** fold-from-flat (a flat pattern drawn as a base flange and folded with sketched bends, with unit tests); a **rule for the corner-trim curve** of the converted rim-and-lip cabinet (today the trim reproduces the user's hand-tuned spline for one set of corner geometry; a new sheet, radius or K needs a derived curve — the criterion is a weld-tight folded corner); and the remaining features (jog, gusset, tab and slot, swept flange, rip, lofted bend), each probed against the live API and covered by a suite before it is called done. *Convert to Sheet Metal* from inside SolidWorks and the differential-flange cabinet (v4) are done and tested.
 - **Technical drawing:** the core tools exist; remaining work is a drafting-aware dimensioning layer (deterministic section planning, correct dimension placement), GD&T / datums, title blocks, detail views, and a bill of materials (BOM).
 
 ---

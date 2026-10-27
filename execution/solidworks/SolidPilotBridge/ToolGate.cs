@@ -34,6 +34,10 @@ namespace SolidPilot.Bridge
         /// <summary>The tool whose call is running right now (null when idle); shown in the task pane.</summary>
         public static volatile string CurrentTool;
 
+        /// <summary>True once the caller has been told STA_TIMEOUT for the call that is still running: nobody is waiting for its answer any more, so a long-running tool that WAITS (pumps messages for a
+        /// PropertyManager, a dialog ...) should stop at its next opportunity, clean up and return instead of carrying on for minutes (2026-10-27: an abandoned Convert call kept going for 10 min).</summary>
+        public static volatile bool CancelRequested;
+
         /// <summary>How long the gate waits for SolidWorks' UI thread to answer a no-op before it refuses a call with SW_BUSY (env SOLIDPILOT_UI_WAIT_SEC, default 20 s).</summary>
         public static int UiWaitSeconds
         {
@@ -99,7 +103,7 @@ namespace SolidPilot.Bridge
                 if (!call.Done.Wait(TimeSpan.FromSeconds(timeout)))
                 {
                     bool stillRunning;
-                    lock (StateLock) { stillRunning = !call.Finished; if (stillRunning) _abandoned = true; }   // decided under the lock: the job may finish at this very moment
+                    lock (StateLock) { stillRunning = !call.Finished; if (stillRunning) { _abandoned = true; CancelRequested = true; } }   // decided under the lock: the job may finish at this very moment
                     if (stillRunning)
                     {
                         var dlg = Dialogs.ToJson(Dialogs.List());
@@ -114,7 +118,7 @@ namespace SolidPilot.Bridge
 
         private static void RunJob(IToolsHost host, string body, Call call)
         {
-            lock (StateLock) { _busySinceTicks = DateTime.UtcNow.Ticks; }
+            lock (StateLock) { _busySinceTicks = DateTime.UtcNow.Ticks; CancelRequested = false; }
             CurrentTool = Snapshots.ToolOf(body);
             try
             {
@@ -126,7 +130,7 @@ namespace SolidPilot.Bridge
             finally
             {
                 Inflight.End(); CurrentTool = null;
-                lock (StateLock) { _busySinceTicks = 0; _abandoned = false; call.Finished = true; }
+                lock (StateLock) { _busySinceTicks = 0; _abandoned = false; CancelRequested = false; call.Finished = true; }
                 One.Release();
                 call.Done.Set();
             }

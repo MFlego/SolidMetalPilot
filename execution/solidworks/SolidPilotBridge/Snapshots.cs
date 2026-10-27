@@ -26,7 +26,9 @@ namespace SolidPilot.Bridge
         private static readonly HashSet<string> NoSnapshot = new HashSet<string>
         {
             "analyze_model", "analyze_slddrw_test", "analyze_assembly", "get_selection", "verify_state", "export_document", "batch_export", "save_document",
-            "open_document", "open_new_part", "open_new_assembly", "activate_document"
+            "open_document", "open_new_part", "open_new_assembly", "activate_document",
+            "ui_inspect"             // inspects / drives SolidWorks' own UI: a SaveAs copy before it would CANCEL the PropertyManager it is about to look at
+
         };
 
         public static string Folder { get { return Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "SolidPilot", "snapshots"); } }

@@ -146,7 +146,7 @@
   "output": "→ see execution-response.json (returns the created rib feature name; result_geometry {volume, faces, edges} after the rib)"
  },
  "add_edge_feature": {
-  "description": "Applies a 3D edge modifier to solid body edges. Operates post-extrusion on the solid, NOT on sketch segments. feature_type='fillet': rounds edge(s) with radius_or_distance as radius. feature_type='chamfer': cuts a chamfer — chamfer_type='distance_angle' (setback + angle, default 45°) or 'distance_distance' (D1 + distance2, directional, chamfer_flip swaps sides). PREFERRED edge selection: edge_indices (JSON array of integer indices from analyze_model(edges)) — robust for crowded/concave (inner-corner, small-radius) edges that coordinate picks can't disambiguate. Fallback: ex/ey/ez (single) or edges_json (multiple {ex,ey,ez}).",
+  "description": "Applies a 3D edge modifier to solid body edges. Operates post-extrusion on the solid, NOT on sketch segments. feature_type='fillet': rounds edge(s) with radius_or_distance as radius. feature_type='chamfer': cuts a chamfer — chamfer_type='distance_angle' (setback + angle, default 45°) or 'distance_distance' (D1 + distance2, directional, chamfer_flip swaps sides). PREFERRED edge selection: edge_indices (JSON array of integer indices from analyze_model(edges)) — robust for crowded/concave (inner-corner, small-radius) edges that coordinate picks can't disambiguate. Fallback: ex/ey/ez (single) or edges_json (multiple {ex,ey,ez}). MULTIPLE-RADIUS FILLET (fillet only): `radii` (meters, one per edge, in the order edge_indices then points are listed) makes ONE Fillet feature with a radius of its own per edge (IFeatureManager.FeatureFillet3 with the Radii array); the edges are found by geometry (`points` = a point ON each edge (any curve type); a point on a corner is refused as EDGE_AMBIGUOUS) and the feature is read back edge by edge.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -161,7 +161,9 @@
     "chamfer_type": "string (chamfer only: 'distance_angle' (default) | 'distance_distance')",
     "angle": "number (chamfer distance_angle only: chamfer angle in DEGREES, default 45)",
     "distance2": "number (chamfer distance_distance only: second-face setback D2 in meters, required > 0 there)",
-    "chamfer_flip": "boolean (chamfer only: swap which face gets D1 vs D2 / flip direction, default false)"
+    "chamfer_flip": "boolean (chamfer only: swap which face gets D1 vs D2 / flip direction, default false)",
+    "radii": "JSON string/array (fillet only — [r1, r2, ...] meters, ONE PER EDGE: a multiple-radius fillet as ONE feature; radius_or_distance is then ignored)",
+    "points": "JSON string/array (with radii — [[x, y, z], ...] meters: a point ON each edge (any curve type), after the edge_indices)"
    }
   },
   "output": "→ see execution-response.json"
@@ -626,6 +628,124 @@
    }
   },
   "output": "→ see execution-response.json — result_geometry {feature, edges, profile_sketch, profile_drawn{...}, definition{...}, body_before, body_after, feature_error, verified}"
+ },
+ "delete_face": {
+  "description": "Delete Face(s): removes faces from a solid so that it becomes an open SURFACE body (IModelDoc.InsertDeleteFace, plain Delete). Faces are identified by a point ON them (meters) and selected as objects. The base shape of a converted rim-and-lip enclosure starts this way. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "faces": "JSON string/array ([[x, y, z], ...] meters: one point ON each face to delete; required)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, faces_deleted, bodies_before{solid_bodies, surface_bodies}, bodies_after{...}, feature_error, verified}"
+ },
+ "offset_surface": {
+  "description": "Offset Surface of one surface body (IModelDoc2.InsertOffsetSurface) by a distance, inward or outward: the result is MEASURED (bounding box inside / outside the original) and redone once with the API's Reverse flag flipped when it went the wrong way. The original body is hidden by default. Used to offset the base skin inward by one sheet thickness before Convert to Sheet Metal with reverse thickness on. Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "body_point": "JSON string/array ([x, y, z] meters: a point ON the surface body; required)",
+    "distance": "number (meters, > 0; required)",
+    "direction": "string ('inward' (default) | 'outward')",
+    "hide_original": "boolean (default true)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, distance, direction, size_before, size_after, size_change, reverse_flag_flipped, hidden_original, feature_error, verified}"
+ },
+ "surface_extrude": {
+  "description": "SURFACE EXTRUDE of a sketch (IFeatureManager.FeatureExtruRefSurface3: single-ended, blind, no draft, no caps, no knit): the profile - open or closed - is extruded as a SURFACE body, a ribbon for an open profile. Used with surface_cut to trim an unfolded sheet-metal blank. The new surface body and the feature's rebuild state are read back. Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "depth": "number (meters, 0 < d <= 1; required)",
+    "sketch": "string (the sketch's name; default: the active sketch, which is exited)",
+    "reverse": "boolean (default false: along the sketch plane's normal; true: the other way)",
+    "mid_plane": "boolean (default false; true: symmetric about the sketch plane, depth = the TOTAL width)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, sketch, depth, reverse, surface_bodies, surface_box, surface_size, problems[], feature_error, verified}"
+ },
+ "surface_cut": {
+  "description": "SURFACE CUT (IFeatureManager.InsertCutSurface): cut the solid with a surface - the feature that made it is selected alone (selecting the body as well fails). Unlike a solid cut, a surface cut can be mirrored with create_pattern (the corner trim of a converted enclosure relies on it). flip=false removes the side the surface normal points to, flip=true the other side; the volume removed is MEASURED, a cut that removed nothing is refused (NOTHING_CUT) and max_removed_volume is the safety net against a wrong flip (CUT_REMOVED_TOO_MUCH): the feature is deleted again in both cases. Volumes m3. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "surface": "string (the feature that made the cutting surface, e.g. 'Surface-Extrude1'; required)",
+    "flip": "boolean (default false)",
+    "keep_piece": "integer (KeepPieceIndex of the API, default 0)",
+    "max_removed_volume": "number (m3; refuse and take the feature out again when the cut removes more)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, surface, flip, volume_before, volume_after, removed_volume, feature_error, verified}"
+ },
+ "sheet_metal_fold": {
+  "description": "Unfold (flatten) or Fold (bend back) the bends of the active sheet-metal part through the typed API, the way the PropertyManager does it: the FIXED face (selection mark 1) and the bends (their OneBend sub-features, mark 2) are selected as objects, then IModelDoc2.InsertSheetMetalUnfold / InsertSheetMetalFold. Used to edit the flat blank in place (a multiple-radius fillet of its corners, a surface-cut corner trim) and fold the part back. The Unfold / Fold feature is read back (IFoldsFeatureData: bends held, fixed face kept) and an all-bends unfold must leave the body flat (thinnest extent = the sheet thickness). Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "action": "string ('unfold' | 'fold'; required)",
+    "fixed_face": "JSON string/array ([x, y, z] meters: a point ON the face that stays put, or its index from analyze_model(faces); required). Fold with the same face you unfolded with.",
+    "bends": "string ('all' (default: every OneBend sub-feature of the part)) or JSON string/array of bend names (['SharpBend1', 'SharpBend3'])"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, action, bends_selected, bends_in_part, bends_in_feature, fixed_face_deviation, size_before, size_after, flat, problems[], feature_error, verified}"
+ },
+ "sheet_metal_from_flat": {
+  "description": "FOLD FROM FLAT: build a sheet-metal part from the flat pattern in an ASCII DXF (the inverse of the flat-pattern export) in the active EMPTY part. The tool reads the outline (lines, arcs, splines, polylines; circles are holes) and the straight bend lines (HIDDEN lines, and continuous lines that hang off the outline or join two outline corners), cuts the outline into regions along the bend lines, finds the region that stays put and the tree of bends that leads to every other region, then builds on the Front Plane: a base flange from the outline, then sketched bends (SM3dBend) - the OUTERMOST bends first, so that every bend line is still in the flat plane - one feature per (depth, direction). SolidWorks folds a sketched bend along the whole (infinite) line, so a flat only folds this way when no region reaches across the line of a bend that is not its own: the plan checks that BEFORE anything is created and refuses a flat with closed corners (BEND_NOT_FOLDABLE, with the measured reach). Directions come from the linetypes (SolidWorks' API export: HIDDEN = hidden_direction, continuous = the other) or from `directions`. The closed-loop proof: the part's own flat pattern must have the size of the DXF outline. plan_only reads and plans without a document. Lengths meters. Bumps state_version (a build).",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "dxf_path": "string (the full path of an ASCII DXF; required)",
+    "thickness": "number (meters; required for a build)",
+    "bend_radius": "number (meters, the INSIDE radius; required for a build)",
+    "k_factor": "number (default 0.5; the flat blank does not depend on it, the folded size does)",
+    "angle": "number (degrees, default 90; every bend)",
+    "units": "string ('auto' (default: $INSUNITS) | 'mm' | 'cm' | 'm' | 'in' | 'ft')",
+    "directions": "JSON string/array/object (one 'up' / 'down' per DEPTH, innermost bend first: ['up','up','down'], or {'3':'down'}; overrides the linetypes)",
+    "hidden_direction": "string ('up' (default) | 'down'): the direction of the HIDDEN bend lines; continuous lines go the other way when the DXF draws both",
+    "fixed_point": "JSON string/array ([x, y] meters = the DXF coordinates x units: a point of the region that stays put; default the biggest region)",
+    "tolerance": "number (meters, default 1e-5: end points closer than this are one point)",
+    "reach_tolerance": "number (meters, default 5e-5: how far a region may reach past the line of a bend that is not its own)",
+    "allow_unfoldable": "boolean (default false: build even when a region reaches across a bend line; the finding stays as a warning)",
+    "keep_on_failure": "boolean (default false: a build that fails half way takes its own features out again and says so; true keeps them for a look)",
+   "plan_only": "boolean (default false: read and plan only, no document needed)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry: plan_only {units, scale_to_meters, entities, outline{pieces, kinds, holes, box, size}, bends[{index, from, to, length, linetype, depth, direction, near_region, far_region}], regions[], fixed_point, build_order[{depth, direction, bends}], warnings[]}; a build adds {steps[], features[], bends, bends_expected, flat_size, dxf_size, flat_deviation, folded_size, problems[], verified}"
+ },
+ "sheet_metal_convert": {
+  "description": "IN-PROCESS HOST ONLY (the out-of-process exe answers Unknown tool). Convert to Sheet Metal of a surface or solid body, driven through SolidWorks' own PropertyManager (a WPF control in the SolidWorks process) in ONE call: the fixed face is preselected, the command started, the bend-edge and rip-sketch lists filled with genuine picks in the EXACT order given (selection order matters), the settings written into the PropertyManager and OK pressed; every pick is verified (list count + selection manager) and the created feature's definition is read back. Nothing is left open on failure. Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "fixed_face": "JSON string/array ([x, y, z] meters: a point ON the face that stays put; required)",
+    "bend_edges": "JSON string/array ([[x, y, z], ...] meters: one point ON each bend edge, in pick order)",
+    "rip_sketches": "JSON string/array ([\"Sketch30\", ...]: names of existing one-line sketches)",
+    "steps": "JSON string/array (the ordered recipe [{\"list\":\"bend\",\"edges\":[...]},{\"list\":\"rip\",\"sketches\":[...]},...]; overrides bend_edges / rip_sketches)",
+    "thickness": "number (meters; REQUIRED - SolidWorks remembers the last PropertyManager value, so a call must not lean on it)",
+    "bend_radius": "number (meters; inside radius; REQUIRED)",
+    "reverse_thickness": "string ('default' = 'on' | 'on' | 'off'; on = material outside the surface; every setting left out takes the PropertyManager's FACTORY default and is written explicitly)",
+    "keep_body": "boolean (keep the original body; default false)",
+    "corner": "string ('' = 'butt' | 'butt' | 'overlap' | 'underlap'; butt is on while the picks are made, the requested corner goes in after them)",
+    "corner_timing": "string ('late' (default: after the picks) | 'early')",
+    "rip_gap": "number (meters; default 0.002)",
+    "overlap_ratio": "number (default 0.5)",
+    "relief": "string ('' = 'rectangular' | 'rectangular' | 'obround' | 'tear')",
+    "relief_ratio": "number (rectangular / tear only; the PropertyManager has no usable box for it, so it is written into the created feature's definition afterwards and read back; left out = the document template's value)",
+    "k_factor": "number (applied as the global K-factor after the feature is created)",
+    "views": "JSON string/array (named views the picker may try, e.g. [\"*Isometric\", \"*Back\"])",
+    "hide_other_bodies": "boolean (default true; hidden while picking, shown again after)",
+    "accept": "boolean (default true; false leaves the PropertyManager open with the lists filled)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {accepted, feature, feature_error, lists{bend_edges, rip_sketches, rip_edges_found, fixed_face}, definition{...}, picks[...], sheet_metal{...}, problems[], verified}"
  },
  "document_units": {
   "description": "Reads or sets the active document's length unit and decimal places (IModelDocExtension.SetUserPreferenceInteger swUnitsLinear / swUnitsLinearDecimalPlaces). The cut list and an exported flat DXF are written in this unit ($INSUNITS follows it); the tool API itself stays in meters. decimals defaults to 2 for metric and 3 for inches. Bumps state_version on set.",

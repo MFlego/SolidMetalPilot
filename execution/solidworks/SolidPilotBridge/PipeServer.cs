@@ -19,7 +19,7 @@ namespace SolidPilot.Bridge
     public class PipeServer
     {
         public const string PipeName = "SolidPilotBridge";
-        public const string Version = "0.8";
+        public const string Version = "0.9";
         private readonly SldWorks _sw; private readonly BridgeEvents _ev; private readonly IBridgeServices _services;
         private Thread _t; private volatile bool _stop;
         /// <summary>Set by the add-in once the REST façade exists (for the "tools_info" reply).</summary>

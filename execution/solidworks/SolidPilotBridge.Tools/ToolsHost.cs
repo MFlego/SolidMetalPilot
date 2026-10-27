@@ -72,8 +72,7 @@ namespace SolidPilot.Bridge.Tools
 #if DEBUG
                 if (request.Tool.StartsWith("__test_", StringComparison.Ordinal)) response = TestHook(request); else
 #endif
-                // a fresh service per request, exactly like the out-of-process controller (no instance state may leak between calls); it is handed the live ISldWorks
-                response = ToolDispatcher.Dispatch(new SolidWorksService(OperationGuard.Instance, _services.SolidWorks), request);
+                response = Dispatch(request);
             }
             catch (Exception ex)
             {
@@ -84,6 +83,14 @@ namespace SolidPilot.Bridge.Tools
             if (response.Status == "FAILED") ExecLog.Write("<- " + request.Tool + " FAILED " + (response.Error == null ? "" : response.Error.Code + ": " + response.Error.Message));
             else ExecLog.Write("<- " + request.Tool + " " + response.Status + " sv=" + response.StateVersion);
             return Reply(200, response);
+        }
+
+        // A fresh service per request, exactly like the out-of-process controller (no instance state may leak between calls); it is handed the live ISldWorks.
+        // Tools that exist only in this host (InProc\) are tried first; everything else is the shared dispatcher, identical in both hosts.
+        private ExecutionResponse Dispatch(ToolRequest request)
+        {
+            var service = new SolidWorksService(OperationGuard.Instance, _services.SolidWorks);
+            return InProcTools.Dispatch(service, request) ?? ToolDispatcher.Dispatch(service, request);
         }
 
 #if DEBUG

@@ -462,6 +462,10 @@ namespace SolidworksExecution.Services
 
         public ExecutionResponse AddEdgeFeature(ToolRequest request)
         {
+            // `radii` (one radius per edge) = ONE multiple-radius fillet feature, typed and read back (SolidWorksService.FilletMulti.cs)
+            var jp = request.Params as JObject;
+            if (jp != null && (jp["radii"] != null || jp["radii_json"] != null)) return FilletMultiRadius(request);
+
             if (_guard.IsDuplicate(request.OperationId))
                 return _guard.GetDuplicate(request.OperationId);
 

@@ -59,6 +59,12 @@ namespace SolidworksExecution.Services
                 case "document_units":         return service.DocumentUnits(request);
                 case "equations":              return service.Equations(request);
                 case "sketch_center_rectangle": return service.SketchCenterRectangle(request);
+                case "delete_face":            return service.DeleteFace(request);
+                case "offset_surface":         return service.OffsetSurface(request);
+                case "sheet_metal_fold":       return service.SheetMetalFold(request);
+                case "surface_extrude":        return service.SurfaceExtrude(request);
+                case "surface_cut":            return service.SurfaceCut(request);
+                case "sheet_metal_from_flat":  return service.SheetMetalFromFlat(request);
                 default:                       return null;
             }
         }
