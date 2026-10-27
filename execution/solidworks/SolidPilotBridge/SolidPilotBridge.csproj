@@ -55,8 +55,13 @@
     <Compile Include="BridgeEvents.cs" />
     <Compile Include="BridgeLog.cs" />
     <Compile Include="Dialogs.cs" />
+    <Compile Include="HttpFacade.cs" />
     <Compile Include="PipeServer.cs" />
     <Compile Include="ScriptRunner.cs" />
+    <Compile Include="Snapshots.cs" />
+    <Compile Include="ToolGate.cs" />
+    <Compile Include="ToolsContract.cs" />
+    <Compile Include="ToolsLoader.cs" />
     <Compile Include="UiThread.cs" />
     <Compile Include="WindowProbe.cs" />
   </ItemGroup>

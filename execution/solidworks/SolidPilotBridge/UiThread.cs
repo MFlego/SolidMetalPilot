@@ -18,6 +18,14 @@ namespace SolidPilot.Bridge
             UiThreadId = Thread.CurrentThread.ManagedThreadId;
         }
 
+        /// <summary>Queue work onto the UI thread and return at once. The caller waits on its own handle, so it can give up while the job still completes later (ToolGate relies on this).
+        /// The job must catch its own exceptions: an unhandled one would surface inside SolidWorks' message loop.</summary>
+        public static void Post(Action job)
+        {
+            if (_invoker == null) throw new InvalidOperationException("UiThread not initialised");
+            _invoker.BeginInvoke((MethodInvoker)delegate { job(); });
+        }
+
         /// <summary>Run on the UI thread and return the result; throws TimeoutException instead of hanging the caller (e.g. when a modal dialog blocks the UI thread).</summary>
         public static T Run<T>(Func<T> f, int timeoutMs = 15000)
         {

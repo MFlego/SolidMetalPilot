@@ -1,0 +1,56 @@
+using SolidworksExecution.Models;
+
+namespace SolidworksExecution.Services
+{
+    // Routes a tool request to its SolidWorksService method. Shared by BOTH hosts - the out-of-process OWIN controller (ToolController) and the in-process SolidPilot Bridge add-in
+    // (SolidPilotBridge.Tools) - so the tool surface cannot drift between them. Returns null for an unknown tool so the caller can emit its own "unknown tool" response.
+    public static class ToolDispatcher
+    {
+        public static ExecutionResponse Dispatch(SolidWorksService service, ToolRequest request)
+        {
+            switch (request.Tool)
+            {
+                case "open_new_part":          return service.OpenNewPart(request);
+                case "open_document":          return service.OpenDocument(request);
+                case "create_sketch":          return service.CreateSketch(request);
+                case "add_sketch_entity":      return service.AddSketchEntity(request);
+                case "add_sketch_entities":    return service.AddSketchEntities(request);
+                case "add_dimension":          return service.AddDimension(request);
+                case "add_sketch_constraint":  return service.AddSketchConstraint(request);
+                case "add_edge_feature":       return service.AddEdgeFeature(request);
+                case "create_rib":             return service.CreateRib(request);
+                case "create_drawing":         return service.CreateDrawing(request);
+                case "add_drawing_view":       return service.AddDrawingView(request);
+                case "add_flat_pattern_view":  return service.AddFlatPatternView(request);
+                case "add_drawing_dimension":  return service.AddDrawingDimension(request);
+                case "auto_dimension_drawing": return service.AutoDimensionDrawing(request);
+                case "auto_center_marks":      return service.AutoCenterMarks(request);
+                case "add_hole_callout":       return service.AddHoleCallout(request);
+                case "add_section_view":       return service.AddSectionView(request);
+                case "save_document":          return service.SaveDocument(request);
+                case "export_document":        return service.ExportDocument(request);
+                case "batch_export":           return service.BatchExport(request);
+                case "extrude_feature":        return service.ExtrudeFeature(request);
+                case "verify_state":           return service.VerifyState(request);
+                case "close_document":         return service.CloseDocument(request);
+                case "analyze_model":          return service.AnalyzeModel(request);
+                case "analyze_slddrw_test":    return service.AnalyzeDrawing(request);
+                case "get_selection":          return service.GetSelection(request);
+                case "edit_sketch":            return service.EditSketch(request);
+                case "add_reference_geometry": return service.AddReferenceGeometry(request);
+                case "create_pattern":         return service.CreatePattern(request);
+                case "set_part_material":      return service.SetPartMaterial(request);
+                case "sheet_metal_feature":    return service.SheetMetalFeature(request);
+                case "modify_dimension":       return service.ModifyDimension(request);
+                case "edit_feature":           return service.EditFeature(request);
+                case "activate_document":      return service.ActivateDocument(request);
+                case "analyze_assembly":       return service.AnalyzeAssembly(request);
+                case "open_new_assembly":      return service.OpenNewAssembly(request);
+                case "insert_component":       return service.InsertComponent(request);
+                case "add_mate":               return service.AddMateTool(request);
+                case "save_body_as_part":      return service.SaveBodyAsPart(request);
+                default:                       return null;
+            }
+        }
+    }
+}

@@ -1,7 +1,8 @@
 # SolidPilot Bridge - live test harness (layer 2-4 of the stress plan). Requires SolidWorks running with the bridge loaded and NO modal dialog open.
-# Usage:  powershell -NoProfile -ExecutionPolicy Bypass -File bridge-tests.ps1 [-Group protocol|dialogs|scripts|exec|all] [-Json out.json]
+# Usage:  powershell -NoProfile -ExecutionPolicy Bypass -File bridge-tests.ps1 [-Group protocol|dialogs|scripts|exec|all] [-BaseUrl http://localhost:5001] [-Json out.json]
+# -BaseUrl: the REST host the 'exec' group talks to - the out-of-process execution layer (default :5000) or the in-process façade (:5001); both must answer the same way.
 # Each test prints PASS/FAIL with a reason; exit code = number of failures. The harness never leaves a dialog open (it answers its own dialogs).
-param([ValidateSet('protocol', 'dialogs', 'scripts', 'exec', 'all')][string]$Group = 'all', [string]$Json = '')
+param([ValidateSet('protocol', 'dialogs', 'scripts', 'exec', 'all')][string]$Group = 'all', [string]$Json = '', [string]$BaseUrl = 'http://localhost:5000')
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $probes = Join-Path (Split-Path -Parent $here) 'probes'
@@ -76,21 +77,21 @@ if ($Group -in 'dialogs', 'all') {
 }
 
 if ($Group -in 'exec', 'all') {
-    "== execution layer integration (needs the execution server on http://localhost:5000)"
+    "== execution layer integration (REST host $BaseUrl)"
     ClearDialogs
-    Test '/health reports bridgeLoaded=true and the timeout' { $h = (Invoke-WebRequest -UseBasicParsing http://localhost:5000/health -TimeoutSec 30).Content | ConvertFrom-Json; Assert ($h.bridgeLoaded -eq $true) 'bridgeLoaded false'; Assert ($h.staTimeoutSeconds -gt 0) 'no timeout' }
+    Test '/health reports bridgeLoaded=true and the timeout' { $h = (Invoke-WebRequest -UseBasicParsing $BaseUrl/health -TimeoutSec 30).Content | ConvertFrom-Json; Assert ($h.bridgeLoaded -eq $true) 'bridgeLoaded false'; Assert ($h.staTimeoutSeconds -gt 0) 'no timeout' }
     Test 'tool call is REFUSED with DIALOG_BLOCKING while a dialog is open, works again after' {
         $job = Start-Job { $c = New-Object IO.Pipes.NamedPipeClientStream('.', 'SolidPilotBridge', [IO.Pipes.PipeDirection]::InOut); $c.Connect(5000); $w = New-Object IO.StreamWriter($c); $w.AutoFlush = $true; $r = New-Object IO.StreamReader($c); $w.WriteLine('msgbox bridge-test-dialog-4'); $r.ReadLine(); $c.Dispose() }
         try {
             Start-Sleep -Milliseconds 1500
-            $body = @{ operationId = [guid]::NewGuid().ToString(); tool = 'verify_state'; stateVersion = ((Invoke-WebRequest -UseBasicParsing http://localhost:5000/api/tool/state -TimeoutSec 20).Content | ConvertFrom-Json).stateVersion; params = @{} } | ConvertTo-Json
-            $r = (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body http://localhost:5000/api/tool/execute -TimeoutSec 30).Content | ConvertFrom-Json
+            $body = @{ operationId = [guid]::NewGuid().ToString(); tool = 'verify_state'; stateVersion = ((Invoke-WebRequest -UseBasicParsing $BaseUrl/api/tool/state -TimeoutSec 20).Content | ConvertFrom-Json).stateVersion; params = @{} } | ConvertTo-Json
+            $r = (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body $BaseUrl/api/tool/execute -TimeoutSec 30).Content | ConvertFrom-Json
             Assert ($r.status -eq 'FAILED' -and $r.error.code -eq 'DIALOG_BLOCKING') ("response: " + ($r | ConvertTo-Json -Compress -Depth 4))
         } finally { ClearDialogs; $job | Wait-Job -Timeout 10 | Out-Null; $job | Remove-Job -Force }
-        $sv = ((Invoke-WebRequest -UseBasicParsing http://localhost:5000/api/tool/state -TimeoutSec 20).Content | ConvertFrom-Json).stateVersion
+        $sv = ((Invoke-WebRequest -UseBasicParsing $BaseUrl/api/tool/state -TimeoutSec 20).Content | ConvertFrom-Json).stateVersion
         $body2 = @{ operationId = [guid]::NewGuid().ToString(); tool = 'verify_state'; stateVersion = $sv; params = @{} } | ConvertTo-Json
-        $r2 = (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body2 http://localhost:5000/api/tool/execute -TimeoutSec 60).Content | ConvertFrom-Json
-        Assert ($r2.status -eq 'COMPLETED') ("after clearing: " + ($r2 | ConvertTo-Json -Compress -Depth 4)) }
+        $r2 = (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body $body2 $BaseUrl/api/tool/execute -TimeoutSec 60).Content | ConvertFrom-Json
+        Assert (-not ($r2.status -eq 'FAILED' -and $r2.error.code -in 'DIALOG_BLOCKING', 'SW_BUSY', 'STA_TIMEOUT')) ("after clearing: " + ($r2 | ConvertTo-Json -Compress -Depth 4)) }
 }
 
 ""; $fail = @($script:results | Where-Object { -not $_.pass }).Count

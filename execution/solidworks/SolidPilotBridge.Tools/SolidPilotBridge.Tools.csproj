@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SolidPilot Bridge TOOLS: the SolidPilot tool implementations as a reloadable generation for the in-process add-in (SolidPilotBridge).
+     The tool code itself is NOT copied: the exact same source files the out-of-process execution layer compiles (SolidworksExecution\Services, Models, OperationGuard, ExecLog) are linked in,
+     so both hosts run identical tool logic. Only ToolsHost.cs (the in-process request handling) is new.
+     The shell loads the built SolidPilotBridge.Tools.dll from BYTES, so it can be rebuilt and swapped with the "reload_tools" pipe command while SolidWorks keeps running.
+     Build:   MSBuild SolidPilotBridge.Tools.csproj -p:FrameworkPathOverride=<...>\packages\Microsoft.NETFramework.ReferenceAssemblies.net48.1.0.3\build\.NETFramework\v4.8
+     Output:  bin\<Config>\ and a copy of the dll + pdb + Newtonsoft.Json into $(ToolsDeployDir) (default: ..\SolidPilotBridge\bin\<Config>\tools\, where the shell looks). -->
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <ProjectGuid>{C8D2E3F4-5061-4B72-9C83-AD1E2F3B4A55}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>SolidPilot.Bridge.Tools</RootNamespace>
+    <AssemblyName>SolidPilotBridge.Tools</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+    <LangVersion>9.0</LangVersion>
+    <ExecDir>..\SolidworksExecution</ExecDir>
+    <SwRedist Condition="'$(SwRedist)' == '' And Exists('C:\Program Files\Dassault Systemes\SOLIDWORKS 3DEXPERIENCE R2026x\SOLIDWORKS\api\redist')">C:\Program Files\Dassault Systemes\SOLIDWORKS 3DEXPERIENCE R2026x\SOLIDWORKS\api\redist</SwRedist>
+    <SwRedist Condition="'$(SwRedist)' == ''">C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\api\redist</SwRedist>
+    <!-- The shell assembly (contract types). Referenced from its build output; read-only use, so this works while SolidWorks has the shell loaded. -->
+    <ShellDll Condition="'$(ShellDll)' == ''">..\SolidPilotBridge\bin\$(Configuration)\SolidPilotBridge.dll</ShellDll>
+    <ToolsDeployDir Condition="'$(ToolsDeployDir)' == ''">..\SolidPilotBridge\bin\$(Configuration)\tools\</ToolsDeployDir>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="SolidWorks.Interop.sldworks"><HintPath>$(SwRedist)\SolidWorks.Interop.sldworks.dll</HintPath><Private>False</Private><EmbedInteropTypes>False</EmbedInteropTypes></Reference>
+    <Reference Include="SolidWorks.Interop.swconst"><HintPath>$(SwRedist)\SolidWorks.Interop.swconst.dll</HintPath><Private>False</Private><EmbedInteropTypes>False</EmbedInteropTypes></Reference>
+    <Reference Include="SolidWorks.Interop.swpublished"><HintPath>$(SwRedist)\SolidWorks.Interop.swpublished.dll</HintPath><Private>False</Private><EmbedInteropTypes>False</EmbedInteropTypes></Reference>
+    <Reference Include="SolidPilotBridge"><HintPath>$(ShellDll)</HintPath><Private>False</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ToolsHost.cs" />
+    <!-- the shared tool code, linked (never copied) -->
+    <Compile Include="$(ExecDir)\Services\*.cs"><Link>Shared\Services\%(Filename)%(Extension)</Link></Compile>
+    <Compile Include="$(ExecDir)\Models\*.cs"><Link>Shared\Models\%(Filename)%(Extension)</Link></Compile>
+    <Compile Include="$(ExecDir)\Infrastructure\OperationGuard.cs"><Link>Shared\Infrastructure\OperationGuard.cs</Link></Compile>
+    <Compile Include="$(ExecDir)\Infrastructure\IOperationGuard.cs"><Link>Shared\Infrastructure\IOperationGuard.cs</Link></Compile>
+    <Compile Include="$(ExecDir)\Infrastructure\ExecLog.cs"><Link>Shared\Infrastructure\ExecLog.cs</Link></Compile>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="DeployTools" AfterTargets="Build">
+    <ItemGroup>
+      <ToolsFile Include="$(OutDir)SolidPilotBridge.Tools.dll;$(OutDir)SolidPilotBridge.Tools.pdb;$(OutDir)Newtonsoft.Json.dll" />
+    </ItemGroup>
+    <MakeDir Directories="$(ToolsDeployDir)" />
+    <!-- SkipUnchangedFiles: Newtonsoft.Json.dll beside the tools is loaded (hence locked) by a running SolidWorks; the tools dll itself is loaded from bytes and never locks -->
+    <Copy SourceFiles="@(ToolsFile)" DestinationFolder="$(ToolsDeployDir)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="tools deployed to $(ToolsDeployDir)" />
+  </Target>
+</Project>

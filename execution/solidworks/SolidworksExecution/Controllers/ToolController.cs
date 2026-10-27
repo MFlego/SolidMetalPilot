@@ -157,53 +157,11 @@ namespace SolidworksExecution.Controllers
             return Request.CreateResponse(HttpStatusCode.OK, response);
         }
 
-        // Routes a tool request to its service method. Runs on the STA thread (see Execute).
+        // Routes a tool request to its service method (the table is shared with the in-process host: Services/ToolDispatcher.cs). Runs on the STA thread (see Execute).
         // Returns null for an unknown tool so the caller can emit the BadRequest response.
         private ExecutionResponse Dispatch(ToolRequest request)
         {
-            switch (request.Tool)
-            {
-                case "open_new_part":          return _service.OpenNewPart(request);
-                case "open_document":          return _service.OpenDocument(request);
-                case "create_sketch":          return _service.CreateSketch(request);
-                case "add_sketch_entity":      return _service.AddSketchEntity(request);
-                case "add_sketch_entities":    return _service.AddSketchEntities(request);
-                case "add_dimension":          return _service.AddDimension(request);
-                case "add_sketch_constraint":  return _service.AddSketchConstraint(request);
-                case "add_edge_feature":       return _service.AddEdgeFeature(request);
-                case "create_rib":             return _service.CreateRib(request);
-                case "create_drawing":         return _service.CreateDrawing(request);
-                case "add_drawing_view":       return _service.AddDrawingView(request);
-                case "add_flat_pattern_view":  return _service.AddFlatPatternView(request);
-                case "add_drawing_dimension":  return _service.AddDrawingDimension(request);
-                case "auto_dimension_drawing": return _service.AutoDimensionDrawing(request);
-                case "auto_center_marks":      return _service.AutoCenterMarks(request);
-                case "add_hole_callout":       return _service.AddHoleCallout(request);
-                case "add_section_view":       return _service.AddSectionView(request);
-                case "save_document":          return _service.SaveDocument(request);
-                case "export_document":        return _service.ExportDocument(request);
-                case "batch_export":           return _service.BatchExport(request);
-                case "extrude_feature":        return _service.ExtrudeFeature(request);
-                case "verify_state":           return _service.VerifyState(request);
-                case "close_document":         return _service.CloseDocument(request);
-                case "analyze_model":          return _service.AnalyzeModel(request);
-                case "analyze_slddrw_test":    return _service.AnalyzeDrawing(request);
-                case "get_selection":          return _service.GetSelection(request);
-                case "edit_sketch":            return _service.EditSketch(request);
-                case "add_reference_geometry": return _service.AddReferenceGeometry(request);
-                case "create_pattern":         return _service.CreatePattern(request);
-                case "set_part_material":      return _service.SetPartMaterial(request);
-                case "sheet_metal_feature":    return _service.SheetMetalFeature(request);
-                case "modify_dimension":       return _service.ModifyDimension(request);
-                case "edit_feature":           return _service.EditFeature(request);
-                case "activate_document":      return _service.ActivateDocument(request);
-                case "analyze_assembly":       return _service.AnalyzeAssembly(request);
-                case "open_new_assembly":      return _service.OpenNewAssembly(request);
-                case "insert_component":       return _service.InsertComponent(request);
-                case "add_mate":               return _service.AddMateTool(request);
-                case "save_body_as_part":      return _service.SaveBodyAsPart(request);
-                default:                       return null;
-            }
+            return ToolDispatcher.Dispatch(_service, request);
         }
     }
 }

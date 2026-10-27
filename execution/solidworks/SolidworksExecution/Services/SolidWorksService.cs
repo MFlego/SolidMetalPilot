@@ -23,6 +23,14 @@ namespace SolidworksExecution.Services
             _guard = guard;
         }
 
+        // In-process host (SolidPilot Bridge add-in): the add-in already holds the live ISldWorks, so there is nothing to attach to - every EnsureConnected() succeeds immediately
+        // and the ROT / launch logic below is never used.
+        public SolidWorksService(IOperationGuard guard, ISldWorks injected) : this(guard)
+        {
+            _solidWorks = injected;
+            IsConnected = injected != null;
+        }
+
         // SolidWorks COM must be called from an STA thread.
         // Ensure the calling thread is STA (e.g. [STAThread] on Main, or a dedicated STA thread).
         public bool Connect()

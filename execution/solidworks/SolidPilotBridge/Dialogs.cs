@@ -54,6 +54,13 @@ namespace SolidPilot.Bridge
         private static string Text(IntPtr h) { var sb = new StringBuilder(1024); GetWindowText(h, sb, sb.Capacity); return sb.ToString(); }
         private static string Cls(IntPtr h) { var sb = new StringBuilder(256); GetClassName(h, sb, sb.Capacity); return sb.ToString(); }
 
+        // SolidWorks keeps a pooled Task-Dialog window (a low window handle, created at start-up) that now and then turns visible with ONLY the template placeholder text and no buttons. It is not
+        // a dialog anyone can answer, and treating it as one made tool calls fail with DIALOG_BLOCKING for ~10 s (2026-10-26). A real dialog always has buttons or real text.
+        private static readonly HashSet<string> TemplateTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Title", "Description", "Button1", "Button2", "Button3", "Hyperlink Text 1", "Hyperlink Text 2" };
+        private static readonly HashSet<long> SkeletonsSeen = new HashSet<long>();
+        private static bool IsSkeleton(DialogInfo d) { return d.Buttons.Count == 0 && d.Text.Count > 0 && d.Text.TrueForAll(t => TemplateTexts.Contains(t)); }
+        private static void NoteSkeleton(long handle) { lock (SkeletonsSeen) { if (SkeletonsSeen.Add(handle)) BridgeLog.Info("ignoring skeleton Task-Dialog window " + handle + " (template text only, no buttons)"); } }
+
         /// <summary>Visible top-level dialogs of THIS process (standard #32770 dialogs and WPF HwndWrapper message boxes), never the main SolidWorks window.</summary>
         public static List<DialogInfo> List()
         {
@@ -74,6 +81,7 @@ namespace SolidPilot.Bridge
                     return true;
                 }, IntPtr.Zero);
                 if (d.Text.Count == 0) d.Text.AddRange(UiaTexts(h));
+                if (IsSkeleton(d)) { NoteSkeleton(d.Handle); return true; }
                 res.Add(d); return true;
             }, IntPtr.Zero);
             return res;

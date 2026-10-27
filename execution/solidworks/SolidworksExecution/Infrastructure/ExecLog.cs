@@ -12,10 +12,15 @@ namespace SolidworksExecution.Infrastructure
         public static readonly string FilePath =
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "execution.log");
 
+        // In-process host (SolidPilot Bridge add-in): redirects every line into the add-in's own log, because BaseDirectory there is the SolidWorks install folder.
+        public static Action<string> Sink;
+
         public static void Write(string message)
         {
             try
             {
+                var sink = Sink;
+                if (sink != null) { sink(message); return; }
                 lock (_lock)
                 {
                     File.AppendAllText(FilePath,
