@@ -56,10 +56,12 @@ class AdapterExecutionPort(ExecutionPort):
         return get_state()
 
 
-def run_feature_graph(graph):
+def run_feature_graph(graph, capture=False):
     """Compile + run a Feature Graph IR (dict) against the live execution layer.
 
     Returns a pycompiler CompileResult. Does NOT touch the adapter's state_version global — the
     caller (server.submit_feature_graph) resyncs that afterwards via GET /state (first-class).
+    capture=True keeps every op's result_geometry in the node log (the live integration tests read
+    volumes, faces and problems from it); the MCP doors leave it off so their reply stays small.
     """
-    return compile_and_run(AdapterExecutionPort(), graph)
+    return compile_and_run(AdapterExecutionPort(), graph, capture=capture)

@@ -40,7 +40,11 @@ and is extractable to a standalone service later. Modules map to the table above
 `lowering.py`, `resolver.py` (geometric anchors v0 — replay-exact, edit-fragile),
 `ir_schema.py` (structural validation), `compiler.py` (orchestration + feature-level failure
 mapping), with an offline test suite (`pycompiler/tests/`, fake port — runs in CI, no
-SolidWorks needed). Reached in production through the adapter's `rebuild_from_ir` tool; the
+SolidWorks needed). Since schema 0.8 the sheet-metal DFM vocabulary (22 node types) is TABLE DRIVEN in
+`sheetmetal_nodes.py` - one spec per node (tool, fields, units at the tool boundary, rules) read by a generic
+validator and a generic lowering - and `coverage.py` classifies every tool of the execution contract as reachable
+from a named IR node or exempt with a reason (a test fails when a tool has no decision). Reached in production
+through the adapter's `rebuild_from_ir` tool; the
 direct `submit_feature_graph` door exists as a commented-out test tool. Both doors run this
 same compiler. The low-level MCP tools remain the primary build path until the vocabulary and
 a durable (edit-surviving) reference resolver are ready.

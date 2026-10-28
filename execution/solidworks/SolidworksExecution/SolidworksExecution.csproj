@@ -121,6 +121,7 @@
     <Compile Include="Services\SolidWorksService.MoveFace.cs" />
     <Compile Include="Services\SolidWorksService.SheetMetalSweptFlange.cs" />
     <Compile Include="Services\SolidWorksService.SheetMetalFormingTool.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalCornerRelief.cs" />
     <Compile Include="Services\ToolDispatcher.cs" />
     <Compile Include="Startup.cs" />
   </ItemGroup>

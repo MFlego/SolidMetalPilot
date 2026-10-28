@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solidpilot-pycompiler"
-version = "0.6.0"
+version = "0.7.0"
 description = "SolidPilot: deterministic Feature Graph IR -> SolidWorks tool-call compiler (no LLM below MCP)"
 requires-python = ">=3.9"
 license = { text = "AGPL-3.0-only" }

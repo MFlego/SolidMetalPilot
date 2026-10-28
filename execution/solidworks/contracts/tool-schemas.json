@@ -726,14 +726,15 @@
   "output": "\u2192 see execution-response.json \u2014 result_geometry: plan_only {units, scale_to_meters, entities, outline{pieces, kinds, holes, box, size}, bends[{index, from, to, length, linetype, depth, direction, near_region, far_region}], regions[], fixed_point, build_order[{depth, direction, bends}], warnings[]}; a build adds {steps[], features[], bends, bends_expected, flat_size, dxf_size, flat_deviation, folded_size, problems[], verified}; the flange recipe adds route 'miter_flange', recipe{kind, rings, centre, bend_half_spans_x, bend_half_spans_y, directions, free_strip, wall_edge_offset, plate, profile_points, rip_gap, flat_strips, profile_segments}, rip_gap, cutting_length, dxf_outline_length, cutting_length_deviation and sketched_bends_refusal"
  },
  "sheet_metal_gusset": {
-  "description": "SHEET-METAL GUSSET (SolidWorks' Rib): the pressed 'rounded' rib or the 'flat' triangular one in the inside corner of a bend, through CreateDefinition(swFmSMGusset) -> ISMGussetFeatureData -> CreateFeature (the InsertSheetMetalGussetFeature calls return null for every selection tried). SupportingFaces = the two faces the gusset joins (the sheet and the flange beside one bend); the gusset stands at the START vertex of the bend line (SolidWorks' reference point) plus `offset`. The feature is read back (type, thickness, offset, dimensions, draft), the reference point and the gusset centre are returned, and the added volume and face count are measured. Lengths meters, angles degrees. Bumps state_version.",
+  "description": "SHEET-METAL GUSSET (SolidWorks' Rib): the pressed 'rounded' rib or the 'flat' triangular one in the inside corner of a bend, through CreateDefinition(swFmSMGusset) -> ISMGussetFeatureData -> CreateFeature (the InsertSheetMetalGussetFeature calls return null for every selection tried). SupportingFaces = the two faces the gusset joins (the sheet and the flange beside one bend); the gusset stands at the START vertex of the bend line (SolidWorks' reference point) plus `offset`. The feature is read back (type, thickness, offset, dimensions, draft), the reference point and the gusset centre are returned, and the added volume and face count are measured. Lengths meters, angles degrees. Bumps state_version. position (new) is the stable form: the gusset's centre measured from the START of the bend, whatever gussets stand on it already - SolidWorks' own reference vertex moves once the bend edge is split, so the tool creates, reads the reference back and recreates at the corrected offset when needed.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "faces": "JSON string/array of two face indices from analyze_model(faces)",
     "points": "JSON string/array of two points [[x,y,z], ...] (meters) ON the two faces (alternative or addition to faces; exactly two faces in all)",
-    "offset": "number (meters, > 0, required): distance along the bend from its start vertex to the centre of the gusset",
+    "offset": "number (meters, > 0): the older form - the distance from the reference vertex SolidWorks chooses (the bend's start only for the first gusset), returned as reference_point",
+    "position": "number (meters, > 0): where the gusset's CENTRE stands, measured along the bend from its START (the end with the lowest coordinate along it); always where asked - built by measuring the reference vertex SolidWorks really used. Give position OR offset",
     "gusset_type": "string ('rounded' (default) | 'flat')",
     "dimension_scheme": "string ('indent_depth' (default) | 'profile')",
     "indent_depth": "number (meters; required for scheme indent_depth)",
@@ -869,6 +870,24 @@
    }
   },
   "output": "\u2192 see execution-response.json \u2014 place: result_geometry {feature, feature_type, tool, tool_path, configuration, rotation, point, pick_point, face_normal, pushes_toward, volume_before, volume_after, volume_change, centre_of_mass_before, centre_of_mass_after, body_before, body_after, feature_faces, pick_to_footprint, overhang_checked, problems[], verified}; list: {folders[], count, tools[{name, category, relative_path, path}]}"
+ },
+ "sheet_metal_corner_relief": {
+  "description": "CORNER RELIEF (swFmCornerRelief): the relief cut where the bends of two walls meet at a corner, ONE feature for every two-bend corner of the part, through CreateDefinition -> ICornerReliefFeatureData -> SetBodyScope(the body, REQUIRED) -> Initialize(two-bend) -> CollectAllCorners -> ISMCornerReliefData per corner -> CreateFeature. Five relief types were built and measured (circular, square, tear, obround, rectangular); the three-bend reliefs killed SolidWorks on two-bend corners and are not offered. The corners are touched only when CollectAllCorners answered 0; the result is checked (rebuild error 0 else taken out again, relief type read back - a square relief reads back as rectangular, the same cut - volume down). Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "relief": "string ('circular' (default) | 'square' | 'tear' | 'obround' | 'rectangular')",
+    "width": "number (meters, > 0): circular = the diameter (at least 2 x the thickness), obround = the slot width; default 2 x the thickness",
+    "length": "number (meters, > 0): square / rectangular = the side, obround = the slot length (about twice the width); required for those; default 2 x the thickness",
+    "corner_type": "string ('two_bend' (default); 'three_bend' is refused)",
+    "tangent_to_bend": "boolean (optional)",
+    "center_on_bend_lines": "boolean (optional)",
+    "add_filleted_corners": "boolean (optional, needs fillet_diameter)",
+    "fillet_diameter": "number (meters, > 0)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, feature_type, relief, corner_type, corners_collected, definition{corner_count, corner_type, corners[{index, relief_type, slot_length, slot_width, ...}]}, width, length, body_before, body_after, volume_before, volume_after, volume_change, feature_error, problems[], verified}"
  },
  "sheet_metal_convert": {
   "description": "IN-PROCESS HOST ONLY (the out-of-process exe answers Unknown tool). Convert to Sheet Metal of a surface or solid body, driven through SolidWorks' own PropertyManager (a WPF control in the SolidWorks process) in ONE call: the fixed face is preselected, the command started, the bend-edge and rip-sketch lists filled with genuine picks in the EXACT order given (selection order matters), the settings written into the PropertyManager and OK pressed; every pick is verified (list count + selection manager) and the created feature's definition is read back. Nothing is left open on failure. Lengths meters. Bumps state_version.",

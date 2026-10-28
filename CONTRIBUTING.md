@@ -133,7 +133,11 @@ python server.py
   ```
   cd compiler/solidworks
   python -m pycompiler.tests.test_compiler
+  python -m pycompiler.tests.test_sheetmetal_nodes
+  python -m pycompiler.tests.test_ir_schema_contract
   ```
+
+  `test_sheetmetal_nodes` covers the table-driven sheet-metal DFM vocabulary (`pycompiler/sheetmetal_nodes.py`): the exact tool call every node lowers to, every rejected form (nothing executed), the typed tools' `verified` verdict, and the **IR coverage manifest** (`pycompiler/coverage.py`) - every tool of `execution/solidworks/contracts/tool-schemas.json` must be reachable from a named IR node or exempt with a reason, so **adding an execution tool means deciding its IR status in the same change**. A new node is a new entry in the `SPECS` table, its description in `feature-graph.schema.json` (the contract test diffs the closed sets and the field names), and a row in the test's `CASES`. The live counterpart is `execution/solidworks/SolidPilotBridge/tests/ir-integration-tests.py`.
 
 Both offline suites run in **CI on every push/PR** (`.github/workflows/ci.yml`). The C# layer is not built in CI — it requires the licensed SolidWorks interop assemblies; C# behavior is verified live instead.
 

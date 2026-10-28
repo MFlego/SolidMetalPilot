@@ -1,8 +1,8 @@
 {
  "_meta": {
   "name": "feature-graph",
-  "version": "0.7.2-draft",
-  "status": "DRAFT — v0.5 vocabulary grown from the REAL production parts in drawing-samples/ (IR-ADR-007): the 1-1 bracket's recorded VOCABULARY_GAP list (path sketch profile, offset datum plane, up_to_surface end condition, edge fillet + edge reference model, construction geometry); v0.5.1 adds the 1-2 flange's gap list (revolve with in-sketch axis, circular_pattern with datum-intersection axis + runtime seed-feature reference). Do NOT freeze before the MAT v1 validation set arrives; v0.6.0 adds the ASSEMBLY sub-vocabulary (component + mate — Phase B, ADR-047), grown from the real assembly samples in drawing-samples/assembly/. v0.7.0 (the FORWARD Feature Graph session, IR-ADR-017) deliberately overrides the grow-from-real-parts mantra ONCE to cover the FULL existing part tool surface: sweep, linear_pattern, ellipse/spline profile primitives, graph-level material, edge_flange simple length mode. Known tool-surface limits recorded there (revolve/sweep/loft are boss-only; linear pattern D2 unwired). v0.7.1 (audit-A1) adds NO vocabulary — it PROMOTES eight closed vocabulary sets that existed only as prose (assembly_node_types, mate_types, mate_alignments, anchor_kinds_face/edge, pattern_directions, chamfer_types, bend_positions, edge_flange_positions) plus the two grammar sets (body_producers, feature_producers) into covered_subset as real arrays, so the schema<->ir_schema.py contract test can machine-diff them. Motivation: circular_pattern's seed list had silently rotted to five stale types since 0.7.0 — prose cannot be tested. v0.7.2 (2026-07-30, IR-ADR-019 follow-up) likewise adds NO vocabulary — it DOCUMENTS `extrude.reversed`, which lowering.py has mapped to the tool's `reverse` param and ir_schema.py has validated as a boolean since v0.5, but which the registry never listed. It was found by reading the COMPILER SOURCE instead of the registry — exactly the inversion audit-A1 exists to prevent, and a blind spot audit-A1 cannot catch because it diffs covered_subset ARRAYS while per-param fields are prose by design. No compiler or validator change; graphs that already used the flag are unaffected.",
+  "version": "0.8.0-draft",
+  "status": "DRAFT — v0.5 vocabulary grown from the REAL production parts in drawing-samples/ (IR-ADR-007): the 1-1 bracket's recorded VOCABULARY_GAP list (path sketch profile, offset datum plane, up_to_surface end condition, edge fillet + edge reference model, construction geometry); v0.5.1 adds the 1-2 flange's gap list (revolve with in-sketch axis, circular_pattern with datum-intersection axis + runtime seed-feature reference). Do NOT freeze before the MAT v1 validation set arrives; v0.6.0 adds the ASSEMBLY sub-vocabulary (component + mate — Phase B, ADR-047), grown from the real assembly samples in drawing-samples/assembly/. v0.7.0 (the FORWARD Feature Graph session, IR-ADR-017) deliberately overrides the grow-from-real-parts mantra ONCE to cover the FULL existing part tool surface: sweep, linear_pattern, ellipse/spline profile primitives, graph-level material, edge_flange simple length mode. Known tool-surface limits recorded there (revolve/sweep/loft are boss-only; linear pattern D2 unwired). v0.7.1 (audit-A1) adds NO vocabulary — it PROMOTES eight closed vocabulary sets that existed only as prose (assembly_node_types, mate_types, mate_alignments, anchor_kinds_face/edge, pattern_directions, chamfer_types, bend_positions, edge_flange_positions) plus the two grammar sets (body_producers, feature_producers) into covered_subset as real arrays, so the schema<->ir_schema.py contract test can machine-diff them. Motivation: circular_pattern's seed list had silently rotted to five stale types since 0.7.0 — prose cannot be tested. v0.7.2 (2026-07-30, IR-ADR-019 follow-up) likewise adds NO vocabulary — it DOCUMENTS `extrude.reversed`, which lowering.py has mapped to the tool's `reverse` param and ir_schema.py has validated as a boolean since v0.5, but which the registry never listed. It was found by reading the COMPILER SOURCE instead of the registry — exactly the inversion audit-A1 exists to prevent, and a blind spot audit-A1 cannot catch because it diffs covered_subset ARRAYS while per-param fields are prose by design. No compiler or validator change; graphs that already used the flag are unaffected. v0.8.0 (2026-10-28, IR-ADR-021, the SHEET-METAL DFM session) adds the vocabulary of the typed sheet-metal tools built since: hem, break_corner, closed_corner, corner_relief, miter_flange, gusset, jog, tab_slot, move_face, forming_tool, lofted_bend, swept_flange, from_flat, unfold, fold, flat_pattern, sheet_metal_settings, delete_face, offset_surface, surface_extrude, surface_cut, convert_to_sheet_metal; gauge tables on the base flange, extrude.merge and a radius per fillet edge. The new nodes are STRICT (an unknown field is an error) and their tools' own `verified` verdict is enforced. Table driven: pycompiler/sheetmetal_nodes.py; the contract test diffs every closed set AND every node's field names.",
   "role": "CAD-NEUTRAL intermediate representation (IR). The host AI (Planner) emits this; the deterministic compiler/solidworks lowers it to tool calls. The model NEVER emits raw tool sequences.",
   "doubles_as": "Capability registry — the set of supported feature node types + params IS the capability list. The Planner validates intent against this single artifact (no separate chatty discovery protocol)."
  },
@@ -37,7 +37,6 @@
   }
  },
  "covered_subset": {
-  "_note": "The subset pycompiler compiles today (key renamed from v05_covered_subset at 0.7.0 — the version lives in _meta, not the key). Outside it the compiler rejects the graph at structural-validation time (no silent gaps). Superset of the v0-exp subset (box+hole fixture still compiles unchanged). CONTRACT (0.7.1, audit-A1): every ARRAY in this block is machine-diffed against the matching frozenset in compiler/solidworks/pycompiler/ir_schema.py by pycompiler/tests/test_ir_schema_contract.py — both directions, exact set equality. Adding a token on one side alone FAILS CI. The prose keys (_note, datum_offset, assumptions) are deliberately NOT contract; per-param types/ranges live in ir_schema.py code and are exercised by the pycompiler suite, not by string-parsing this file.",
   "node_types": [
    "box",
    "sketch",
@@ -54,7 +53,29 @@
    "sheet_metal",
    "sketched_bend",
    "mirror",
-   "edge_flange"
+   "edge_flange",
+   "hem",
+   "break_corner",
+   "corner_relief",
+   "closed_corner",
+   "miter_flange",
+   "gusset",
+   "jog",
+   "tab_slot",
+   "move_face",
+   "forming_tool",
+   "lofted_bend",
+   "swept_flange",
+   "from_flat",
+   "unfold",
+   "fold",
+   "flat_pattern",
+   "sheet_metal_settings",
+   "delete_face",
+   "offset_surface",
+   "surface_extrude",
+   "surface_cut",
+   "convert_to_sheet_metal"
   ],
   "assembly_node_types": [
    "component",
@@ -160,8 +181,141 @@
    "sheet_metal",
    "sketched_bend",
    "mirror",
-   "edge_flange"
+   "edge_flange",
+   "hem",
+   "break_corner",
+   "corner_relief",
+   "closed_corner",
+   "miter_flange",
+   "gusset",
+   "jog",
+   "tab_slot",
+   "move_face",
+   "forming_tool",
+   "lofted_bend",
+   "swept_flange",
+   "unfold",
+   "fold",
+   "delete_face",
+   "offset_surface",
+   "surface_extrude",
+   "surface_cut",
+   "convert_to_sheet_metal"
   ],
+  "hem_types": [
+   "closed",
+   "open",
+   "rolled",
+   "tear_drop"
+  ],
+  "hem_positions": [
+   "bend_outside",
+   "material_inside"
+  ],
+  "corner_types": [
+   "butt",
+   "overlap",
+   "underlap"
+  ],
+  "break_corner_types": [
+   "chamfer",
+   "fillet"
+  ],
+  "miter_flange_positions": [
+   "bend_centerline",
+   "bend_outside",
+   "bend_sharp",
+   "bend_tangent",
+   "material_inside",
+   "material_outside"
+  ],
+  "gusset_types": [
+   "flat",
+   "rounded"
+  ],
+  "gusset_dimension_schemes": [
+   "indent_depth",
+   "profile"
+  ],
+  "bend_directions": [
+   "down",
+   "up"
+  ],
+  "lofted_thickness_sides": [
+   "side1",
+   "side2"
+  ],
+  "lofted_facet_options": [
+   "chord_tolerance",
+   "number_of_bends",
+   "segment_angle",
+   "segment_length"
+  ],
+  "tab_edge_treatments": [
+   "chamfer",
+   "fillet",
+   "none"
+  ],
+  "move_types": [
+   "offset",
+   "rotate",
+   "translate"
+  ],
+  "relief_types": [
+   "obround",
+   "rectangular",
+   "tear"
+  ],
+  "from_flat_strategies": [
+   "auto",
+   "miter_flange",
+   "sketched_bends"
+  ],
+  "from_flat_units": [
+   "auto",
+   "cm",
+   "ft",
+   "in",
+   "m",
+   "mm"
+  ],
+  "convert_reverse_thickness": [
+   "default",
+   "off",
+   "on"
+  ],
+  "convert_corner_timings": [
+   "early",
+   "late"
+  ],
+  "offset_directions": [
+   "inward",
+   "outward"
+  ],
+  "bend_allowance_types": [
+   "deduction",
+   "direct"
+  ],
+  "reset_overrides": [
+   "auto_relief",
+   "bend_allowance",
+   "bend_parameters"
+  ],
+  "fold_bends": [
+   "all"
+  ],
+  "convert_step_lists": [
+   "bend",
+   "rip"
+  ],
+  "corner_relief_types": [
+   "circular",
+   "obround",
+   "rectangular",
+   "square",
+   "tear"
+  ],
+  "_note": "The subset pycompiler compiles today (key renamed from v05_covered_subset at 0.7.0 — the version lives in _meta, not the key). Outside it the compiler rejects the graph at structural-validation time (no silent gaps). Superset of the v0-exp subset (box+hole fixture still compiles unchanged). CONTRACT (0.7.1, audit-A1): every ARRAY in this block is machine-diffed against the matching frozenset in compiler/solidworks/pycompiler/ir_schema.py by pycompiler/tests/test_ir_schema_contract.py — both directions, exact set equality. Adding a token on one side alone FAILS CI. The prose keys (_note, datum_offset, assumptions) are deliberately NOT contract; per-param types/ranges live in ir_schema.py code and are exercised by the pycompiler suite, not by string-parsing this file.",
   "_grammar_note": "body_producers = node types whose body a 'hole' may reference (ref.node_face.node). feature_producers = node types that CREATE a named feature, so they are valid seeds for linear_pattern/circular_pattern/mirror (the compiler substitutes the seed's runtime feature name). Patterns are producers themselves — that is what lets a grid compose as a pattern OF a pattern.",
   "assumptions": "box centred on the datum origin ('center' -> sketch (0,0)); 'top' bound to global +Y; single body. Path-profile sketches carry EXACT 2D coordinates (from analyze_model(sketch)) — the sketch plane's 2D frame is assumed identical between original and rebuild (same datum/offset => same frame). General 3D-point->sketch-2D resolution for arbitrary faces remains P1.5 option B."
  },
@@ -234,7 +388,8 @@
    "end": "string (optional) — 'blind' (default; requires depth) | 'through_all' | 'up_to_surface' (requires up_to) | 'mid_plane' (requires depth = the TOTAL width; extrudes symmetrically about the sketch plane). Back-compat: depth:'through_all'/'through' or through:true still mean through_all.",
    "depth": "number — meters (blind: the one-sided depth; mid_plane: the TOTAL symmetric width)",
    "reversed": "boolean (optional, default false) — extrude toward the datum's NEGATIVE normal instead of the positive one (maps to the extrude tool's `reverse` param). Default direction is +normal: Front→+Z, Top→+Y, Right→+X. IGNORED by mid_plane (symmetric by construction). THE HIGH-RISK FLAG ON THE REVERSE PATH: a boss on 'front' grows toward the direction the front view is looked at FROM, so WITHOUT `reversed` the sketch plane is the part's BACK face and every subsequent depth is measured from the wrong end — which produces a MIRRORED part that volume, area and topology all report as correct (recipe R6/R14; observed for real on f-2, IR-ADR-019).",
-   "up_to": "object (up_to_surface only) — { face: face_anchor } : the face the feature terminates on, as a geometric anchor (+ optional hint)"
+   "up_to": "object (up_to_surface only) — { face: face_anchor } : the face the feature terminates on, as a geometric anchor (+ optional hint)",
+   "merge": "boolean (optional, default true) - false: the boss stays a SEPARATE body (a multi-body part for tab_slot)"
   },
   "revolve": {
    "description": "Solid of revolution of the referenced sketch node (COVERED since v0.5.1 — grown for the 1-2 flange). The profile sketch should contain the axis segment (typically the construction centerline of the half-section, the classic revolve idiom); the compiler passes the axis segment's 2D coordinates and the tool selects it in the active sketch and treats it as the centerline.",
@@ -279,9 +434,9 @@
    "depth": "number — meters, or 'through_all' (v0.5 supports 'through_all' only; 'through' accepted as an alias)"
   },
   "fillet": {
-   "description": "3D edge fillet (post-solid, NOT a sketch fillet). Lowers to add_edge_feature(fillet, edge_indices) after the resolver matches each edge anchor against live analyze_model(edges) midpoints. THE reference-model testbed — every lesson here feeds P1.3.",
-   "radius": "number — meters (> 0)",
-   "edges": "array of edge_anchor objects (>= 1): [{ near: [x,y,z], hint?: string }] — one per filleted edge, midpoints from the ORIGINAL part's analyze_model(edges)"
+   "description": "3D edge fillet (post-solid, NOT a sketch fillet). Lowers to add_edge_feature(fillet, edge_indices) after the resolver matches each edge anchor against live analyze_model(edges) midpoints. THE reference-model testbed — every lesson here feeds P1.3. v0.8.0: an edge anchor may carry its OWN `radius` - then ONE multiple-radius fillet feature is made (the 12 outline corners of an unfolded blank); `radius` is the default for the anchors without one.",
+   "radius": "number - meters (> 0); optional when EVERY edge anchor carries a radius of its own",
+   "edges": "array of edge_anchor objects (>= 1): [{ near: [x,y,z], hint?: string, radius?: number }] - one per filleted edge, midpoints from the ORIGINAL part's analyze_model(edges)"
   },
   "chamfer": {
    "description": "3D edge chamfer (post-solid; COVERED since v0.5.3 — grown for level-2-2). Same HYBRID edge-anchor reference model as fillet (IR-ADR-008): each anchor's `near` is the target edge's midpoint from the PRE-chamfer geometry (the chamfer consumes those edges), matched against live analyze_model(edges) on the rebuild. Lowers to add_edge_feature(chamfer, edge_indices).",
@@ -297,13 +452,16 @@
    "profiles": "array of >= 2 sketch node ids, IN LOFT ORDER — the profiles the loft blends through (e.g. [\"n10\",\"n11\"] for a two-circle frustum). Each must reference an EARLIER sketch node."
   },
   "sheet_metal": {
-   "description": "Sheet-metal BASE FLANGE (COVERED since v0.5.5 — grown for 4-1). Converts the referenced sketch profile into the sheet blank and establishes the sheet definition (thickness / default bend radius / K-factor). Lowers to sheet_metal_feature(base_flange). The tree's SheetMetal definition feature and Flat-Pattern are byproducts — they are NOT separate IR nodes.",
+   "description": "Sheet-metal BASE FLANGE (COVERED since v0.5.5 — grown for 4-1). Converts the referenced sketch profile into the sheet blank and establishes the sheet definition (thickness / default bend radius / K-factor). Lowers to sheet_metal_feature(base_flange). The tree's SheetMetal definition feature and Flat-Pattern are byproducts — they are NOT separate IR nodes. v0.8.0: an optional SHEET-METAL GAUGE TABLE (gauge_table + gauge): the thickness, radius and K-factor come from the table row.",
    "sketch": "string — id of a sketch node (must be the immediately preceding node — the base flange consumes the ACTIVE sketch)",
-   "thickness": "number — meters (> 0)",
+   "thickness": "number - meters (> 0); optional when gauge_table is given (the table row decides)",
    "bend_radius": "number (optional — default bend radius in meters; omitted = thickness)",
    "k_factor": "number (optional, 0..1 — neutral-axis factor, default 0.5)",
    "reverse_thickness": "boolean (optional, default false — thicken to the OPPOSITE side of the sketch plane. A wrong side puts every downstream bend-sketch plane off the sheet. PREFER reproducing the original's own flag (analyze_model(features) reports it on the SMBaseFlange) over deriving from face positions — see symmetric_thickness for why)",
-   "symmetric_thickness": "boolean (optional, default false — thicken BOTH ways off the sketch plane, ±t/2 mid-plane style. Reproduce the ORIGINAL's own flag (analyze_model(features) reports it on the SMBaseFlange): the thickness-direction flags also define the intrinsic sheet orientation that downstream bend directions fold against — an identical blank B-rep built via reverse flags folded 4-1's Bend1 the MIRRORED way)"
+   "symmetric_thickness": "boolean (optional, default false — thicken BOTH ways off the sketch plane, ±t/2 mid-plane style. Reproduce the ORIGINAL's own flag (analyze_model(features) reports it on the SMBaseFlange): the thickness-direction flags also define the intrinsic sheet orientation that downstream bend directions fold against — an identical blank B-rep built via reverse flags folded 4-1's Bend1 the MIRRORED way)",
+   "gauge_table": "string (optional) - the FULL path of a SolidWorks sheet-metal gauge table (.xlsx); with `gauge`",
+   "gauge": "string - the gauge exactly as the table spells it (e.g. '16 Gauge'); required with gauge_table (a wrong one lists the table's)",
+   "gauge_radius": "number (optional) - meters: one of the table row's radii (default the first)"
   },
   "sketched_bend": {
    "description": "Sketched bend (SM3dBend; COVERED since v0.5.5 — grown for 4-1's five bends). Bends the sheet about the bend LINE(S) in the referenced sketch — a sketch with N bend lines yields ONE feature with N bends (4-1's Sketch6). Lowers to sheet_metal_feature(sketched_bend). The FIXED side is a 3D pick point: SolidWorks derives which half stays put from the POINT, so this anchor carries side semantics, not just face identity.",
@@ -329,6 +487,240 @@
    "flip": "boolean (optional, MODE A only, default false — InsertSketchForEdgeFlange's FlipDir; at 90° the flange plane is flip-invariant and the frame transform absorbs the orientation, but replay it when read)",
    "frame": "{ origin, xdir, ydir } — the ORIGINAL profile sketch's frame (REQUIRED in mode A, ABSENT in mode B)",
    "profile": "array of profile primitives — the ORIGINAL profile sketch's segments, original 2D coords (line/arc/circle + construction flags, same grammar as sketch.profile; REQUIRED in mode A, ABSENT in mode B)"
+  },
+  "hem": {
+   "description": "Hem on the free edge(s) of flange walls (Hem; lowers to sheet_metal_hem). ALL edges of one node make ONE feature. The hem folds toward the side of the edge you pick: the OUTER top edge of a wall folds outward, the INNER one inward. 'double' hems are refused by SolidWorks and not offered.",
+   "edges": "array of anchors {near:[x,y,z], hint?} (>= 1) - a point ON the free edge on top of a flange wall",
+   "hem_type": "'closed' (default; its gap is fixed at 0.1 mm) | 'open' (always 180 degrees) | 'tear_drop' (180 < angle < 270 degrees, default 225) | 'rolled' (angle < 360 degrees, default 180)",
+   "length": "number - meters (> 0): the hem length (SolidWorks' default when omitted)",
+   "gap": "number - meters (> 0): the gap of an open / tear-drop / rolled hem",
+   "angle": "number - RADIANS (> 0): tear_drop and rolled hems only",
+   "radius": "number - meters (> 0): the hem's bend radius (default the sheet's)",
+   "miter_gap": "number - meters (> 0): the gap at mitred corners",
+   "position": "'material_inside' (default) | 'bend_outside'",
+   "reverse": "boolean (default false)",
+   "k_factor": "number in (0, 1): a K-factor for the hem's bends"
+  },
+  "break_corner": {
+   "description": "Break (round or chamfer) the corners of flange walls (Break-Corner; sheet_metal_break_corner). Many faces make ONE feature. It needs the planar face of a flange wall - an edge, a wall's end face or the base flange's face beside flanges is refused. A 45 degree chamfer is how a wall end is cut for a mitre.",
+   "faces": "array of anchors {near:[x,y,z], hint?} (>= 1) - a point ON a flange wall's planar face (outer or inner)",
+   "distance": "number - meters (> 0): the fillet radius / chamfer length",
+   "corner_type": "'fillet' (default) | 'chamfer'",
+   "internal_corners_only": "boolean (optional, set on the feature)",
+   "centered_on_bend_lines": "boolean (optional, set on the feature)"
+  },
+  "corner_relief": {
+   "description": "CORNER RELIEF (sheet_metal_corner_relief): the relief cut where the bends of two walls meet at a corner - ONE feature for EVERY two-bend corner of the part (the open corners of a tray of edge flanges). Only these five relief types were built and measured; the three-bend reliefs kill SolidWorks on two-bend corners and are not offered.",
+   "relief": "'circular' (default; `width` is the diameter, at least 2 x the thickness) | 'square' | 'rectangular' (`length` is the side; ONE cut - SolidWorks stores a square relief as a rectangular one) | 'tear' (fixed by the geometry) | 'obround' (a slot about twice as long as wide: `length` and `width`)",
+   "width": "number - meters (> 0): the diameter of a circular relief / the width of an obround one (default 2 x the thickness)",
+   "length": "number - meters (> 0): the side of a square / rectangular relief / the length of an obround one (required for those; default 2 x the thickness)",
+   "tangent_to_bend": "boolean (optional)",
+   "center_on_bend_lines": "boolean (optional)",
+   "add_filleted_corners": "boolean (optional; needs fillet_diameter; square / rectangular reliefs take it, circular ones ignore it)",
+   "fillet_diameter": "number - meters (> 0)"
+  },
+  "closed_corner": {
+   "description": "Closed Corner (sheet_metal_corners): the wall END FACE at a corner is extended so it closes the corner gap. One face per corner; every corner gets its own Closed Corner feature, in order.",
+   "faces": "array of anchors {near:[x,y,z], hint?} (>= 1) - a point ON the wall end face that points at its neighbour across the corner gap",
+   "corner_type": "'overlap' (default) | 'underlap' | 'butt'",
+   "gap": "number - meters (>= 0): the corner gap (default 0.0762 mm = 0.003 in)",
+   "overlap_ratio": "number in (0, 1] (default 1)",
+   "open_bend_region": "boolean (default false)"
+  },
+  "miter_flange": {
+   "description": "ONE mitre flange along a chain of edges (sheet_metal_miter_flange): a closed loop of four edges gives weld-tight mitred corners all round in a single feature (rim, lip). The profile is generated at the sheet edge at the START of the chain, on the sheet's end face. Give exactly ONE of height / profile_points / profile_sketch.",
+   "edges": "array of anchors {near:[x,y,z], hint?} (>= 1), IN ORDER along the chain - a point ON each edge",
+   "height": "number - meters (> 0): one straight wall `height` off the sheet face (with `angle`)",
+   "profile_points": "array of [across, up] pairs (meters, >= 1): a POLYLINE from the chain start in the sheet's frame - up = off the sheet face, across = toward the sheet's interior (negative = outward); a wall + rim + lip is [[0,0.10],[0.019,0.10],[0.019,0.113]] = a bend at every vertex of every corner",
+   "profile_sketch": "string - id of an EARLIER sketch node holding your own profile (on a plane through the start of the first edge)",
+   "dimension_profile": "boolean (default true): the generated profile is fully defined, one dimension per segment (D1..Dn), so equations can drive it",
+   "angle": "number - RADIANS, with `height` only: from the sheet's flat outward continuation; 90 degrees (default) = perpendicular",
+   "position": "'material_inside' (default; the flange's outer face is flush with the sheet's boundary) | 'material_outside' | 'bend_outside' | 'bend_centerline' | 'bend_sharp' | 'bend_tangent'",
+   "bend_radius": "number - meters (> 0; default the sheet's)",
+   "rip_gap": "number - meters (>= 0): the gap at the mitres (default 0.0762 mm)",
+   "trim_side_bends": "boolean (default true)",
+   "start_offset": "number - meters (>= 0), along the chain",
+   "end_offset": "number - meters (>= 0), along the chain",
+   "relief_ratio": "number (> 0)",
+   "k_factor": "number in (0, 1)"
+  },
+  "gusset": {
+   "description": "Sheet-metal GUSSET (SolidWorks' Rib) in the inside corner of a bend: the pressed 'rounded' rib or the 'flat' triangle (sheet_metal_gusset). `position` is where its centre stands along the bend, from the bend's start.",
+   "faces": "array of anchors {near:[x,y,z], hint?} (EXACTLY 2) - a point ON each of the two faces the gusset joins: the sheet and the flange beside the bend",
+   "position": "number - meters (> 0): where the gusset's CENTRE stands, measured along the bend from its START (the end with the lowest coordinate along it) - always where asked, however many gussets already stand on the bend (the tool measures SolidWorks' reference vertex and corrects)",
+   "indent_width": "number - meters (> 0): the rib's inner faces are this far apart (both dimension schemes)",
+   "gusset_type": "'rounded' (default) | 'flat'",
+   "dimension_scheme": "'indent_depth' (default; needs indent_depth) | 'profile' (needs profile_length and profile_height or profile_angle)",
+   "indent_depth": "number - meters (> 0)",
+   "profile_length": "number - meters (> 0)",
+   "profile_height": "number - meters (> 0)",
+   "profile_angle": "number - RADIANS (> 0), instead of profile_height",
+   "thickness": "number - meters (> 0; default the sheet's)",
+   "flip_sides": "boolean (default false)",
+   "draft": "boolean (default false)",
+   "draft_angle": "number - RADIANS (> 0; default 5 degrees)",
+   "fillet_edges": "boolean (default false)",
+   "edge_fillet_radius": "number - meters (> 0; default 1 mm)",
+   "fillet_inner_corners": "boolean (default false)",
+   "inner_corner_fillet_radius": "number - meters (> 0; default 1 mm)",
+   "fillet_outer_corners": "boolean (default false)",
+   "outer_corner_fillet_radius": "number - meters (> 0; default 1 mm)"
+  },
+  "jog": {
+   "description": "JOG: an offset step in a flat sheet - two parallel bends of opposite direction (sheet_metal_jog; built from two sketched bends at the closed-form distance, the far bend folded first). The sheet's face must lie in the Front plane (z = 0) and be flat; the flat blank does not change.",
+   "line": "[[x,y,z],[x,y,z]] - the FIRST bend line, a segment on the face (SolidWorks treats it as infinite)",
+   "fixed": "{near:[x,y,z], hint?} - a point ON the face on the side that stays put; the other side steps",
+   "offset": "number - meters (> 0): the plane-to-plane step h = the distance between the TOP faces of the two flat parts",
+   "angle": "number - RADIANS (> 0, at most 90 degrees; default 90 degrees): the angle of each bend",
+   "direction": "'up' (default; the part beyond the jog steps toward +Z) | 'down'",
+   "bend_radius": "number - meters (> 0; default the sheet's)",
+   "k_factor": "number in (0, 1; default the part's global K)"
+  },
+  "tab_slot": {
+   "description": "TAB AND SLOT (sheet_metal_tab_slot): tabs on the edge of one body and matching slots in a face of another - a MULTI-BODY part (make the bodies with extrude merge=false). Tabs are spread equally between a start and an end offset along the edge; the node makes a Tab feature and a Slot feature.",
+   "edge": "{near:[x,y,z], hint?} - a point ON the TAB EDGE: an edge of the tab body's face that lies ON the slot face (a wall's bottom edge)",
+   "slot_face": "{near:[x,y,z], hint?} - a point ON the face of the OTHER body in which the slots are cut",
+   "tab_face": "{near:[x,y,z], hint?} (optional) - the tab body's face that TOUCHES the slot face (found by itself when omitted)",
+   "tab_length": "number - meters (> 0): the length of each tab along the edge",
+   "count": "integer >= 1 (default 3)",
+   "start_offset": "number - meters (>= 0): from the edge's START vertex",
+   "end_offset": "number - meters (>= 0): from the edge's END vertex",
+   "slot_clearance": "number - meters (> 0; default 0.1 mm): each slot is the tab plus this at both ends",
+   "tab_thickness": "number - meters (> 0; default the thin side of the tab face)",
+   "tab_height": "number - meters (> 0; default through the slot body)",
+   "edge_treatment": "'none' (default) | 'fillet' | 'chamfer' on the tabs' ends",
+   "edge_treatment_size": "number - meters (> 0): required with a fillet / chamfer"
+  },
+  "move_face": {
+   "description": "MOVE FACE (move_face): move, offset or rotate faces of a body in ONE feature (e.g. the stepped corner tops of a closed-corner chassis).",
+   "faces": "array of anchors {near:[x,y,z], hint?} (>= 1) - a point ON each face to move; several faces make one feature",
+   "move_type": "'offset' (default; needs distance) | 'translate' (needs translation) | 'rotate' (needs rotation)",
+   "distance": "number - meters (> 0): every face moves this far along its normal (reverse = the other way)",
+   "reverse": "boolean (default false)",
+   "translation": "[dx, dy, dz] - meters: the displacement vector",
+   "rotation": "{axis_point:[x,y,z], axis_direction:[x,y,z], angle: RADIANS} - the axis the faces turn about"
+  },
+  "forming_tool": {
+   "description": "FORMING TOOL of the design library (a .sldftp: louver, lance, emboss, extruded flange, rib) placed on a flat sheet face (sheet_metal_forming_tool). The tool forms the sheet AWAY from the face it is placed on (place it on the other face to form the other way); a bend or the edge of the sheet is refused, and a placement that would overhang the sheet's edge, use another configuration than the one asked or report a rebuild error is taken out again. A placed tool can seed a linear_pattern (a louver array).",
+   "tool": "string - a bare name ('louver'), a path relative to the forming tools folder ('louvers/louver') or the full path of a .sldftp",
+   "at": "{near:[x,y,z], hint?} - a point ON the flat sheet face = the PLACEMENT of the tool (the face is found by it)",
+   "rotation": "number - RADIANS (default 0): counter-clockwise looking at the face from outside the part, about the placement point",
+   "configuration": "string (optional) - a configuration of the tool file; one that does not exist is refused"
+  },
+  "lofted_bend": {
+   "description": "LOFTED BEND (sheet_metal_lofted_bend): a sheet-metal transition between two OPEN profile sketches on parallel planes (round-to-square duct, funnel). It creates the sheet-metal definition itself, so it must be the FIRST feature (only sketch nodes before it). Each profile is ONE continuous open chain of lines / arcs, the two of the same kind (an arc and an arc, a U and a U).",
+   "profiles": "array of EXACTLY 2 sketch node ids, in loft order - each an EARLIER sketch node",
+   "thickness": "number - meters (> 0)",
+   "thickness_side": "'side1' (default; material outside the first profile's curve) | 'side2' (inside)",
+   "formed": "boolean (default false: the faceted lofted bend; true: the smooth formed surface)",
+   "bend_radius": "number - meters (> 0; default the thickness)",
+   "facets": "'chord_tolerance' (default) | 'number_of_bends' | 'segment_length' | 'segment_angle': the ONE facet argument SolidWorks uses",
+   "chord_tolerance": "number - meters (> 0; default 0.1 mm)",
+   "number_of_bends": "integer >= 1 (default 4)",
+   "segment_length": "number - meters (> 0; default 10 mm)",
+   "segment_angle": "number - RADIANS (> 0; default 5.73 degrees)",
+   "refer_to_end_points": "boolean (default false)"
+  },
+  "swept_flange": {
+   "description": "SWEPT FLANGE (sheet_metal_swept_flange): sheet metal made by sweeping an open profile along a path (bracket, channel, flared rim). It creates the sheet-metal definition itself, so it must be the FIRST feature (only sketch nodes before it). The profile is an OPEN chain at the START of the path on a plane perpendicular to it (an L, a U, a Z, a single line); the path is a line, a path with a corner (mitred) or an arc.",
+   "profile": "string - id of an EARLIER sketch node: the open profile",
+   "path": "string - id of an EARLIER sketch node (not the profile's): the path",
+   "thickness": "number - meters (> 0)",
+   "bend_radius": "number - meters (> 0; default the thickness): the INSIDE radius",
+   "reverse": "boolean (default false: the profile line is the OUTER face of the bends; true: the inner face)",
+   "start_offset": "number - meters (>= 0)",
+   "end_offset": "number - meters (>= 0)",
+   "trim_side_bends": "boolean (optional)"
+  },
+  "from_flat": {
+   "description": "FOLD FROM FLAT (sheet_metal_from_flat): build the whole part from the flat pattern in an ASCII DXF (outline + straight bend lines), in the empty part - so it must be the FIRST node. Strategy 'sketched_bends' folds along the bend lines (a flat with closed corners is refused with BEND_NOT_FOLDABLE); 'miter_flange' rebuilds a one-profile mitre box (nested bend rings) with the flange recipe; 'auto' picks. The part's own flat pattern is checked against the DXF.",
+   "dxf_path": "string - the full path of the ASCII DXF",
+   "thickness": "number - meters (> 0)",
+   "bend_radius": "number - meters (> 0): the INSIDE radius",
+   "k_factor": "number in (0, 1; default 0.5)",
+   "angle": "number - RADIANS (> 0; default 90 degrees): the angle of every bend",
+   "units": "'auto' (default; $INSUNITS) | 'mm' | 'cm' | 'm' | 'in' | 'ft'",
+   "directions": "list of 'up' | 'down' (one per bend DEPTH, innermost first) or {'<depth>': 'up'|'down'}: the direction of each bend when the DXF does not say",
+   "hidden_direction": "'up' (default) | 'down': what the HIDDEN bend linetype means",
+   "fixed_point": "[x, y] - meters in DXF coordinates: a point of the region that stays put",
+   "tolerance": "number - meters (> 0): joins end points",
+   "reach_tolerance": "number - meters (> 0): how far a region may reach across another bend line",
+   "allow_unfoldable": "boolean (default false)",
+   "keep_on_failure": "boolean (default false)",
+   "strategy": "'sketched_bends' (default) | 'auto' | 'miter_flange'",
+   "rip_gap": "number - meters (>= 0): overrides the rip gap the recipe reads from the DXF"
+  },
+  "unfold": {
+   "description": "UNFOLD (flatten) the bends of the sheet-metal part (sheet_metal_fold): edit the flat blank in place (round its corners with one multi-radius fillet, trim with a surface cut), then `fold` it back with the SAME fixed face.",
+   "fixed_face": "{near:[x,y,z], hint?} - a point ON the face that stays put (e.g. the back plate)",
+   "bends": "'all' (default): every bend"
+  },
+  "fold": {
+   "description": "FOLD the bends of the part back (sheet_metal_fold) after an `unfold` - use the SAME fixed face you unfolded with.",
+   "fixed_face": "{near:[x,y,z], hint?} - a point ON the face that stays put",
+   "bends": "'all' (default): every bend"
+  },
+  "flat_pattern": {
+   "description": "Flat-pattern options of the sheet-metal part (flat_pattern_control): corner treatment, merged faces ...; the Flat-Pattern is unsuppressed, the options applied and measured, and it is suppressed again unless leave_flat. Writing the flat DXF needs a SAVED part: use the flat_pattern_control tool after save_document.",
+   "corner_treatment": "boolean (optional)",
+   "simplify_bends": "boolean (optional)",
+   "merge_faces": "boolean (optional): false splits the flat faces",
+   "show_slit_in_corner_relief": "boolean (optional)",
+   "leave_flat": "boolean (default false): keep the part flat"
+  },
+  "sheet_metal_settings": {
+   "description": "Sheet-metal PARAMETERS of the part (sheet_metal_params set): the global K-factor, the bend-allowance model, the automatic relief, thickness / radius overrides. A document setting, not a tree feature.",
+   "k_factor": "number in (0, 1): the GLOBAL K-factor",
+   "bend_allowance_type": "'direct' (needs bend_allowance) | 'deduction' (needs bend_deduction)",
+   "bend_allowance": "number - meters (>= 0)",
+   "bend_deduction": "number - meters",
+   "auto_relief": "'rectangular' | 'obround' | 'tear'",
+   "relief_ratio": "number (> 0): rectangular / tear only",
+   "thickness": "number - meters (> 0): the base flange's override",
+   "bend_radius": "number - meters (> 0): the base flange's override",
+   "reset_overrides": "list of 'bend_allowance' | 'auto_relief' | 'bend_parameters': back to the document defaults"
+  },
+  "delete_face": {
+   "description": "DELETE FACE(S) of a solid so it becomes an open SURFACE body (delete_face) - the first step of the base shape of a rim-and-lip enclosure that is then offset and converted.",
+   "faces": "array of anchors {near:[x,y,z], hint?} (>= 1) - a point ON each face to delete"
+  },
+  "offset_surface": {
+   "description": "OFFSET SURFACE of one surface body (offset_surface): the recipe for a converted enclosure offsets the outer skin INWARD by one sheet thickness before convert_to_sheet_metal (reverse_thickness on), so the folded part keeps its outer size.",
+   "body": "{near:[x,y,z], hint?} - a point ON the surface body",
+   "distance": "number - meters (> 0)",
+   "direction": "'inward' (default) | 'outward'",
+   "hide_original": "boolean (default true): hide the original so the next picks hit the offset one"
+  },
+  "surface_extrude": {
+   "description": "SURFACE EXTRUDE of a sketch (surface_extrude): the profile becomes a SURFACE body - a ribbon for an open profile - used with surface_cut to trim an unfolded blank.",
+   "sketch": "string - id of an EARLIER sketch node",
+   "depth": "number - meters (> 0, at most 1)",
+   "reverse": "boolean (default false)",
+   "mid_plane": "boolean (default false): symmetric about the sketch plane, depth = the TOTAL width"
+  },
+  "surface_cut": {
+   "description": "SURFACE CUT (surface_cut): cut the solid with a surface made by an earlier surface_extrude. Unlike a solid cut it can be MIRRORED (mirror.features). The tool measures the volume it removed and takes the cut out again when it removed nothing or too much.",
+   "surface": "string - id of an EARLIER surface_extrude node",
+   "flip": "boolean (default false): false removes the side the surface normal points to",
+   "keep_piece": "integer >= 0 (default 0)",
+   "max_removed_volume": "number - cubic meters (> 0): the safety net against a wrong flip"
+  },
+  "convert_to_sheet_metal": {
+   "description": "CONVERT TO SHEET METAL of a surface (or solid) body (sheet_metal_convert; the API cannot create this feature, so it is driven through the PropertyManager from inside SolidWorks - SolidWorks must be on screen). Pick ORDER matters: the fixed face first, then the lists in the order of `steps`. The recipe for a rim-and-lip enclosure: (1) the bend edges nearest the fixed face (the back plate's perimeter), (2) the rip sketches, (3) the next bend series (rim outer edges), (4) the third series (lip root edges).",
+   "fixed_face": "{near:[x,y,z], hint?} - a point ON the face that stays put",
+   "thickness": "number - meters (> 0)",
+   "bend_radius": "number - meters (> 0)",
+   "steps": "ordered array: {list:'bend', edges:[edge anchors]} (one anchor per bend edge, in pick order) | {list:'rip', sketches:[ids of EARLIER sketch nodes]} (one line each, ending at the body's vertices)",
+   "reverse_thickness": "'default' (= 'on': the material goes OUTSIDE the surface) | 'on' | 'off' (the surface is the outer skin)",
+   "keep_body": "boolean (default false)",
+   "corner": "'butt' (factory default) | 'overlap' | 'underlap'",
+   "corner_timing": "'late' (default) | 'early'",
+   "rip_gap": "number - meters (>= 0; factory 2 mm)",
+   "overlap_ratio": "number in (0, 1] (factory 0.5)",
+   "relief": "'rectangular' (factory) | 'obround' | 'tear'",
+   "relief_ratio": "number (> 0; rectangular / tear only)",
+   "k_factor": "number in (0, 1): the global K",
+   "hide_other_bodies": "boolean (default true)"
   }
  },
  "validation_split": {

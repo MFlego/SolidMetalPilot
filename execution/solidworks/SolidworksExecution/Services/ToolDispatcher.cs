@@ -72,6 +72,7 @@ namespace SolidworksExecution.Services
                 case "move_face":              return service.MoveFace(request);
                 case "sheet_metal_swept_flange": return service.SheetMetalSweptFlange(request);
                 case "sheet_metal_forming_tool": return service.SheetMetalFormingTool(request);
+                case "sheet_metal_corner_relief": return service.SheetMetalCornerRelief(request);
                 default:                       return null;
             }
         }

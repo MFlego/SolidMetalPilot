@@ -6,9 +6,11 @@ failure the run STOPS, no rollback is attempted, and the result reports how far 
 feature-level error. The caller (the adapter tool) resyncs state_version afterwards either way.
 
 Public API (consumed by pycompiler/__init__.py and the adapter):
-    compile_and_run(port, graph) -> CompileResult
+    compile_and_run(port, graph, capture=False) -> CompileResult
+        capture=True keeps every op's `result_geometry` in the node log (the live integration tests read
+        volumes, faces and problems from it); the default keeps the log small.
 """
-from . import lowering
+from . import lowering, sheetmetal_nodes
 from .errors import FeatureError
 from .ir_schema import validate
 from .resolver import (resolve_center_on_face, resolve_component_entity_by_anchor,
@@ -56,7 +58,7 @@ class CompileResult(object):
                    self.nodes_completed, self.nodes_total))
 
 
-def compile_and_run(port, graph):
+def compile_and_run(port, graph, capture=False):
     result = CompileResult()
 
     # 1) Structural validation. If it fails, NO execution call is made.
@@ -101,6 +103,11 @@ def compile_and_run(port, graph):
                 feats = ((resp.get("cadState") or {}).get("features")) or []
                 if nid and feats and feats[0]:
                     node_features[nid] = feats[0]
+                elif nid and _result_feature(resp):
+                    # the typed tools (schema 0.8) answer in result_geometry, not in cadState.features
+                    node_features[nid] = _result_feature(resp)
+                if op.strict:
+                    _require_verified(resp, nid, ntype, op)
                 if op.tool == "create_sketch":
                     # A sketch's runtime NAME (renumbered/localized on the rebuild) lives in
                     # cadState.activeSketch, not features — record it so a later loft can reference
@@ -125,7 +132,12 @@ def compile_and_run(port, graph):
                             code="FRAME_UNAVAILABLE", node_id=nid, node_type=ntype,
                             step=op.tool)
                     frame_fn, frame_mirror = _sketch_frame_transform(node["frame"], measured)
-                rec["ops"].append({"tool": op.tool, "note": op.note, "state_version": sv})
+                entry = {"tool": op.tool, "note": op.note, "state_version": sv}
+                if capture and isinstance(resp.get("result_geometry"), dict):
+                    entry["result_geometry"] = resp["result_geometry"]
+                rec["ops"].append(entry)
+            if nid and node_features.get(nid):
+                rec["feature"] = node_features[nid]
             rec["status"] = "COMPLETED"
             result.node_log.append(rec)
             result.nodes_completed += 1
@@ -228,6 +240,10 @@ def _plan_node(port, node, state_version, node_features):
         face_index, info = resolve_top_face(port, state_version, node_id=node.get("id"))
         center2d = resolve_center_on_face(info)
         return lowering.lower_hole(node, face_index, center2d)
+    if ntype in sheetmetal_nodes.NODE_TYPES:
+        # schema 0.8: the geometry anchors go straight through (the typed tools find the entity by geometry
+        # and select it as an object); earlier sketches / features are named by their RUNTIME names
+        return sheetmetal_nodes.lower_node(node, node_features)
     if ntype == "fillet":
         edge_indices, _info = resolve_edges_by_anchor(port, state_version, node["edges"],
                                                       node_id=node.get("id"))
@@ -388,6 +404,34 @@ def _transform_entity_params(params, frame_fn, mirrored):
     if mirrored and out.get("entity_type") == "arc_center" and "direction" in out:
         out["direction"] = -out["direction"]
     return out
+
+
+def _result_feature(resp):
+    """The feature a typed tool created, from result_geometry (feature, else the first of features /
+    new_features) - None when the reply names none."""
+    rg = resp.get("result_geometry")
+    if not isinstance(rg, dict):
+        return None
+    f = rg.get("feature")
+    if isinstance(f, str) and f:
+        return f
+    for key in ("features", "new_features"):
+        v = rg.get(key)
+        if isinstance(v, list) and v and isinstance(v[0], str) and v[0]:
+            return v[0]
+    return None
+
+
+def _require_verified(resp, nid, ntype, op):
+    """A strict op (schema 0.8 typed tool) that answers COMPLETED with verified=false has measured a
+    problem in its own result: stop the node with the tool's problems instead of building on it."""
+    rg = resp.get("result_geometry") if isinstance(resp.get("result_geometry"), dict) else {}
+    verified = rg.get("verified", resp.get("verified"))
+    if verified is False:
+        problems = rg.get("problems") or []
+        raise FeatureError("low-level tool '%s' did not verify its result: %s"
+                           % (op.tool, "; ".join(str(x) for x in problems) or "(no problem listed)"),
+                           code="UNVERIFIED", node_id=nid, node_type=ntype, step=op.tool)
 
 
 def _advance(resp, sv, nid, ntype, op):

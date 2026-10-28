@@ -22,7 +22,10 @@ import json
 import math
 from collections import namedtuple
 
-Op = namedtuple("Op", ["tool", "params", "note"])
+Op = namedtuple("Op", ["tool", "params", "note", "strict"])
+# strict (default False): the compiler fails the node when the tool answers COMPLETED with verified=false
+# (the typed sheet-metal tools of schema 0.8 measure their own result and say so); older tools stay lenient.
+Op.__new__.__defaults__ = (False,)
 
 # Sentinel (JSON-safe string, impossible as a real plane name) — see module docstring.
 FROM_PREV_FEATURE = "__FROM_PREV_FEATURE__"
@@ -168,6 +171,8 @@ def lower_extrude(node, up_to_face_index=None):
     op = node["operation"]
     end = node.get("end")
     extra = {"reverse": True} if node.get("reversed") is True else {}
+    if node.get("merge") is False:
+        extra["merge"] = False      # a boss that stays a SEPARATE body (tab and slot needs two bodies)
     if end == "up_to_surface":
         if up_to_face_index is None:
             raise ValueError("up_to_surface lowering requires a resolved face index")
@@ -304,7 +309,17 @@ def lower_sheet_metal(node):
     """sheet_metal (base flange) -> sheet_metal_feature(base_flange) on the active sketch (the
     profile sketch must immediately precede, like extrude). bend_radius omitted => the tool's
     default (= thickness); k_factor omitted => the tool default 0.5."""
-    params = {"feature_type": "base_flange", "thickness": float(node["thickness"])}
+    params = {"feature_type": "base_flange"}
+    if node.get("thickness") is not None:
+        params["thickness"] = float(node["thickness"])
+    if node.get("gauge_table") is not None:
+        # a SHEET-METAL GAUGE TABLE (.xlsx, full path) + the gauge as the table spells it: thickness, radius and
+        # K-factor come from the table row (an explicit thickness / bend_radius / k_factor is passed on and the
+        # tool refuses a thickness the table does not have)
+        params["gauge_table"] = node["gauge_table"]
+        params["gauge"] = node["gauge"]
+        if node.get("gauge_radius") is not None:
+            params["gauge_radius"] = float(node["gauge_radius"])
     if node.get("bend_radius") is not None:
         params["bend_radius"] = float(node["bend_radius"])
     if node.get("k_factor") is not None:
@@ -318,8 +333,9 @@ def lower_sheet_metal(node):
         # thickness-direction flags also define the intrinsic sheet orientation that downstream
         # bend directions are measured against (the 4-1 Bend1 mirror-fold lesson).
         params["symmetric_thickness"] = True
-    return [Op("sheet_metal_feature", params,
-               "base flange t=%g" % float(node["thickness"]))]
+    note = ("base flange, gauge '%s' of %s" % (node["gauge"], node["gauge_table"]) if node.get("gauge_table") is not None
+            else "base flange t=%g" % float(node["thickness"]))
+    return [Op("sheet_metal_feature", params, note)]
 
 
 def lower_sketched_bend(node):
@@ -464,7 +480,21 @@ def lower_hole(node, face_index, center2d):
 
 def lower_fillet(node, edge_indices):
     """fillet -> ONE add_edge_feature over the resolver-matched edge indices.
-    edge_indices is serialized as a JSON-array STRING — the tool's contract (ADR-022 idiom)."""
+    edge_indices is serialized as a JSON-array STRING — the tool's contract (ADR-022 idiom).
+    MULTIPLE RADII (schema 0.8): an edge anchor may carry its own `radius`; then ONE Fillet feature with a radius
+    per edge is made (the tool's `radii`, one per edge in the order of the indices - the anchors are paired
+    with their resolved indices first, then sorted together). An edge without a radius of its own takes the node's
+    `radius`."""
+    anchors = node.get("edges") or []
+    if any(isinstance(a, dict) and a.get("radius") is not None for a in anchors):
+        pairs = sorted(zip((int(i) for i in edge_indices),
+                           (float(a["radius"]) if a.get("radius") is not None else float(node["radius"]) for a in anchors)))
+        idx = [p[0] for p in pairs]
+        radii = [p[1] for p in pairs]
+        return [Op("add_edge_feature",
+                   {"feature_type": "fillet", "radius_or_distance": radii[0], "radii": radii,
+                    "edge_indices": "[%s]" % ",".join(str(i) for i in idx)},
+                   "fillet, a radius per edge %s on edges %s" % (radii, idx))]
     idx = sorted(int(i) for i in edge_indices)
     return [Op("add_edge_feature",
                {"feature_type": "fillet",

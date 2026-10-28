@@ -1,6 +1,6 @@
 # recipe-usage.md — The IR Generation Recipe (usage edition)
 
-**Version: 0.27.0** · Owner: cad-planner · Served to the model section-by-section through
+**Version: 0.28.0** · Owner: cad-planner · Served to the model section-by-section through
 **TWO channels reading this same file**: the **`get_recipe(section)` TOOL** — the one the model
 can actually call, restored 2026-09-03 (ADR-077) — and the `recipe://usage/<slug>` **MCP
 resources**, indexed by `recipe://usage/index` (ADR-069). Resources live in the CLIENT's
@@ -85,6 +85,29 @@ original — these rules replace the readback discipline there. C1–C5 still ap
   those exist for verbatim replay); `material {name, library?}` at graph level; a GRID as a
   pattern OF a pattern (a `linear_pattern` seeding on an earlier `linear_pattern` — the tool
   has no second direction).
+- **Sheet-metal DFM vocabulary (schema 0.8, forward-only — the reader does not produce these nodes).** One node per
+  feature, in tree order. Geometry is referenced by ANCHORS `{near:[x,y,z]}` — a point ON the face / edge in the state
+  the node meets (an INTERIOR point, never a boundary construction); earlier sketches and features by node id. The
+  sheet itself: `sheet_metal` (base flange; `gauge_table` + `gauge` takes thickness / radius / K from a gauge-table
+  row), `lofted_bend` and `swept_flange` (they create the sheet — the FIRST feature, only sketch nodes before them),
+  `from_flat` (the whole part from a flat DXF — the FIRST node), `convert_to_sheet_metal` (with `delete_face`,
+  `offset_surface` and rip sketches: the enclosure recipe; it is driven through SolidWorks' own PropertyManager, so
+  SolidWorks must be on screen). On the sheet: `edge_flange` (length mode), `hem`, `miter_flange` (a closed loop of 4
+  edges + `profile_points` = one weld-tight rim / lip), `closed_corner`, `corner_relief`, `break_corner`, `gusset`, `jog`, `tab_slot`,
+  `forming_tool`, `move_face`. Flat-blank work: `unfold` → `fillet` (a `radius` on each edge anchor = one
+  multiple-radius feature) or `surface_extrude` + `surface_cut` → `fold` (the SAME fixed face). Document state:
+  `flat_pattern` (options), `sheet_metal_settings` (K-factor, bend allowance, relief).
+  Rules that decide whether it builds: a **forming_tool** forms the sheet AWAY from the face its `at` point is on
+  (use the other face to form the other way), refuses a bend or the sheet's edge, and is taken out again when it
+  would overhang the edge; a louver array is a `linear_pattern` seeded on the `forming_tool` node. A **hem** folds
+  toward the side of the edge you pick (the OUTER top edge of a wall folds outward). **closed_corner** takes the
+  wall END face that points at its neighbour. **corner_relief** relieves EVERY two-bend corner of the part in one feature
+  (circular: `width` = the diameter, at least twice the thickness; square / rectangular: `length`; obround: `length` and
+  `width`, about 2 : 1; three-bend reliefs are not in the vocabulary). **tab_slot** needs a MULTI-BODY part: make the bodies with
+  `extrude` `merge:false`. A **jog** needs a flat sheet face in the Front plane. **gusset** faces are the sheet face
+  and the flange face beside the bend. Angles are RADIANS everywhere. The new nodes are STRICT — an unknown field is
+  an error, never a silent default — and when a tool measures a problem in its own result the node stops with
+  `UNVERIFIED` and the tool's problems: read them, fix the graph, resubmit.
 - **Know what is NOT expressible** (state it, don't improvise a lookalike): sweep/revolve/loft
   are BOSS-only; no shell/draft/dome/wrap/hole-wizard/thread; `linear_pattern` is
   single-direction (+`flip`); mirror planes are canonical datums only. If the intent needs one
@@ -103,7 +126,8 @@ original — these rules replace the readback discipline there. C1–C5 still ap
 
 1. Walk `recipe.features` in order; classify each against the CURRENT covered vocabulary —
    **the schema IS the registry**: read the node types from `feature-graph.schema.json`
-   (the `schema://feature-graph` resource). Part vocabulary (0.7.2-draft): `box`,
+   (the `schema://feature-graph` resource; 0.8.0 adds the sheet-metal DFM nodes — hem, gusset, jog,
+   forming_tool ... — described in the `forward` section; the reader does not emit them yet). Part vocabulary (0.7.2-draft): `box`,
    `sketch`+`extrude` boss/cut (ends blind / through_all / up_to_surface / mid_plane),
    `hole`-on-face, `fillet`, `chamfer`, `revolve`, `sweep`, `rib`, `loft`, `linear_pattern`,
    `circular_pattern`, `mirror`, `sheet_metal`, `sketched_bend`, `edge_flange` (custom-profile

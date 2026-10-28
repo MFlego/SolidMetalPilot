@@ -37,7 +37,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(_COMPILER_ROOT))
 if _COMPILER_ROOT not in sys.path:
     sys.path.insert(0, _COMPILER_ROOT)
 
-from pycompiler import ir_schema  # noqa: E402
+from pycompiler import ir_schema, sheetmetal_nodes  # noqa: E402
 
 _SCHEMA_PATH = os.path.join(_REPO_ROOT, "cad-planner", "contracts", "feature-graph.schema.json")
 
@@ -73,6 +73,10 @@ _PAIRS = {
     "body_producers":        ir_schema.BODY_PRODUCERS,
     "feature_producers":     ir_schema.FEATURE_PRODUCERS,
 }
+
+# schema 0.8 (the sheet-metal DFM vocabulary): the closed sets of the table-driven nodes live in
+# sheetmetal_nodes.ENUM_SETS (schema key -> frozenset) and are paired exactly like the ones above.
+_PAIRS.update(sheetmetal_nodes.ENUM_SETS)
 
 # covered_subset keys that are deliberately PROSE, not contract. Any key that is in neither this
 # set nor _PAIRS is unclassified drift: someone added a subset key without deciding what it is.
@@ -130,6 +134,8 @@ def find_drift():
             errors.append("ir_schema.py accepts %s for %s, but the schema does NOT advertise it "
                           "(the capability is invisible to graph authors)." % (only_code, key))
 
+    errors.extend(find_field_drift())
+
     # ir_schema-internal invariant behind the two anchor_kinds arrays: ANCHOR_KINDS is what
     # validate() actually checks, so a kind added there alone would slip past both pairs above.
     union = ir_schema.ANCHOR_KINDS_FACE | ir_schema.ANCHOR_KINDS_EDGE
@@ -137,6 +143,27 @@ def find_drift():
         errors.append("ir_schema.ANCHOR_KINDS %s != ANCHOR_KINDS_FACE | ANCHOR_KINDS_EDGE %s — "
                       "the schema advertises the face/edge split, so the union must stay derived "
                       "from it." % (sorted(ir_schema.ANCHOR_KINDS), sorted(union)))
+    return errors
+
+
+def find_field_drift():
+    """Schema 0.8: for every TABLE-DRIVEN node (sheetmetal_nodes.SPECS) the schema's feature_types entry must
+    name exactly the fields the validator accepts - a field only the validator knows is invisible to graph
+    authors, a field only the schema advertises is rejected as unknown. (The older hand-written nodes keep
+    their per-param fields as prose by design.)"""
+    with open(_SCHEMA_PATH, encoding="utf-8") as fh:
+        types = json.load(fh).get("feature_types") or {}
+    errors = []
+    for node, fields in sorted(sheetmetal_nodes.FIELD_NAMES.items()):
+        entry = types.get(node)
+        if not isinstance(entry, dict):
+            errors.append("feature_types.%s is MISSING from the schema but sheetmetal_nodes registers it." % node)
+            continue
+        advertised = set(entry) - {"description", "_note"}
+        for k in sorted(advertised - fields):
+            errors.append("feature_types.%s advertises field '%s', which sheetmetal_nodes does NOT accept." % (node, k))
+        for k in sorted(fields - advertised):
+            errors.append("sheetmetal_nodes accepts field '%s' on %s, but the schema does NOT describe it." % (k, node))
     return errors
 
 

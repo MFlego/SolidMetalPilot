@@ -23,6 +23,8 @@ Anything outside the covered set is rejected here with an explicit 'unsupported'
 never silently ignored (recipe.md C5).
 """
 
+from . import sheetmetal_nodes
+
 DATUMS = frozenset(("front", "top", "right"))
 # Assembly sub-vocabulary (v0.6.0 — Phase B, ADR-047): component + mate. An assembly graph is
 # components first (tree order) then mates (creation order); part and assembly node types never
@@ -39,7 +41,7 @@ ANCHOR_KINDS = ANCHOR_KINDS_FACE | ANCHOR_KINDS_EDGE
 NODE_TYPES = frozenset(("box", "sketch", "extrude", "revolve", "sweep", "rib", "hole", "fillet",
                         "chamfer", "loft", "linear_pattern", "circular_pattern", "sheet_metal",
                         "sketched_bend", "mirror", "edge_flange")) \
-    | ASSEMBLY_NODE_TYPES
+    | sheetmetal_nodes.NODE_TYPES | ASSEMBLY_NODE_TYPES
 PROFILE_KINDS = frozenset(("rectangle", "circle", "line", "arc", "ellipse", "spline"))
 # Optional boolean flags any profile primitive may carry (mirrors analyze_model's per-segment flag).
 PROFILE_FLAGS = frozenset(("construction",))
@@ -56,7 +58,7 @@ BODY_PRODUCERS = frozenset(("box", "extrude", "revolve", "sweep"))  # node types
 # producers too: a grid composes as a pattern OF a pattern (the D2-less linear tool).
 FEATURE_PRODUCERS = frozenset(("box", "extrude", "revolve", "sweep", "rib", "hole", "fillet", "chamfer",
                                "loft", "linear_pattern", "circular_pattern", "sheet_metal",
-                               "sketched_bend", "mirror", "edge_flange"))
+                               "sketched_bend", "mirror", "edge_flange")) | sheetmetal_nodes.FEATURE_PRODUCERS
 CHAMFER_TYPES = frozenset(("distance_angle", "distance_distance"))
 BEND_POSITIONS = frozenset(("centerline", "material_inside", "material_outside", "bend_outside"))
 # Edge flange adds 'bend_sharp' (swFlangePositionTypes_e 5) to the shared position set.
@@ -173,6 +175,8 @@ def validate(graph):
                 errors.append("%s: 'operation' must be 'boss' or 'cut' (got %r)." % (label, op))
             if node.get("reversed") is not None and not isinstance(node.get("reversed"), bool):
                 errors.append("%s: 'reversed' must be a boolean (the recipe's flipped-direction flag)." % label)
+            if node.get("merge") is not None and not isinstance(node.get("merge"), bool):
+                errors.append("%s: 'merge' must be a boolean (false = the boss stays a separate body)." % label)
             _check_extrude_end(node, op, label, errors)
 
         elif ntype == "hole":
@@ -299,16 +303,27 @@ def validate(graph):
                 errors.append("%s: 'equal_spacing' must be a boolean." % label)
 
         elif ntype == "fillet":
-            if not _is_pos_number(node.get("radius")):
-                errors.append("%s: 'radius' must be a positive number (meters)." % label)
             edges = node.get("edges")
+            # schema 0.8: an edge anchor may carry its OWN radius (one multiple-radius fillet feature); the node's
+            # `radius` is then optional and is the default for the anchors that carry none.
+            per_edge = isinstance(edges, list) and any(isinstance(e, dict) and e.get("radius") is not None for e in edges)
+            all_own = isinstance(edges, list) and len(edges) > 0 and all(
+                isinstance(e, dict) and e.get("radius") is not None for e in edges)
+            if node.get("radius") is None and all_own:
+                pass
+            elif not _is_pos_number(node.get("radius")):
+                errors.append("%s: 'radius' must be a positive number (meters)%s." % (
+                    label, " (or give every edge anchor a radius of its own)" if per_edge else ""))
             if not isinstance(edges, list) or len(edges) == 0:
                 errors.append("%s: 'edges' must be a non-empty array of edge anchors "
-                              "({near:[x,y,z], hint?})." % label)
+                              "({near:[x,y,z], hint?, radius?})." % label)
             else:
                 for j, e in enumerate(edges):
                     if not isinstance(e, dict) or not _is_point3(e.get("near")):
                         errors.append("%s.edges[%d]: 'near' must be a 3D point [x, y, z] in meters."
+                                      % (label, j))
+                    elif e.get("radius") is not None and not _is_pos_number(e.get("radius")):
+                        errors.append("%s.edges[%d]: 'radius' must be a positive number (meters) when present."
                                       % (label, j))
 
         elif ntype == "chamfer":
@@ -351,8 +366,24 @@ def validate(graph):
                 errors.append("%s: 'sketch' must reference an earlier sketch node (got '%s')." % (label, sk))
             elif not (isinstance(prev, dict) and prev.get("id") == sk):
                 errors.append("%s: a sheet_metal base flange must immediately follow its sketch node '%s'." % (label, sk))
-            if not _is_pos_number(node.get("thickness")):
-                errors.append("%s: 'thickness' must be a positive number (meters)." % label)
+            gauge_table = node.get("gauge_table")
+            if gauge_table is not None:
+                # schema 0.8: a SHEET-METAL GAUGE TABLE (full path of the .xlsx) + the gauge as the table spells it;
+                # thickness / radius / K then come from the table row, so `thickness` is optional.
+                if not isinstance(gauge_table, str) or not gauge_table.strip():
+                    errors.append("%s: 'gauge_table' must be the full path of a sheet-metal gauge table (.xlsx)." % label)
+                if not isinstance(node.get("gauge"), str) or not node.get("gauge", "").strip():
+                    errors.append("%s: 'gauge_table' needs 'gauge' (the gauge exactly as the table spells it, e.g. '16 Gauge')." % label)
+                if node.get("gauge_radius") is not None and not _is_pos_number(node.get("gauge_radius")):
+                    errors.append("%s: 'gauge_radius' must be a positive number (meters) - one of the table row's radii." % label)
+                if node.get("thickness") is not None and not _is_pos_number(node.get("thickness")):
+                    errors.append("%s: 'thickness' must be a positive number (meters) when present." % label)
+            else:
+                for k in ("gauge", "gauge_radius"):
+                    if node.get(k) is not None:
+                        errors.append("%s: '%s' needs 'gauge_table' (the full path of the gauge table)." % (label, k))
+                if not _is_pos_number(node.get("thickness")):
+                    errors.append("%s: 'thickness' must be a positive number (meters)." % label)
             if node.get("bend_radius") is not None and not _is_pos_number(node.get("bend_radius")):
                 errors.append("%s: 'bend_radius' must be a positive number (meters) when present." % label)
             kf = node.get("k_factor")
@@ -529,6 +560,10 @@ def validate(graph):
                             errors.append("%s: anchor.dir must be a 3D unit vector when present." % swhere)
                         if anchor.get("radius") is not None and not _is_pos_number(anchor.get("radius")):
                             errors.append("%s: anchor.radius must be a positive number when present." % swhere)
+
+        elif ntype in sheetmetal_nodes.NODE_TYPES:
+            # schema 0.8 sheet-metal DFM vocabulary: table driven (pycompiler/sheetmetal_nodes.py)
+            sheetmetal_nodes.validate_node(node, ntype, label, pos, seen, errors)
 
         elif ntype == "loft":
             # Multi-profile boss loft. Unlike extrude/revolve/rib, the profile sketches are

@@ -2368,6 +2368,7 @@ def sheet_metal_gusset(
     faces: str = "",
     points: str = "",
     offset: float = 0.0,
+    position: float = 0.0,
     gusset_type: Literal["rounded", "flat"] = "rounded",
     dimension_scheme: Literal["indent_depth", "profile"] = "indent_depth",
     indent_depth: float = 0.0,
@@ -2391,14 +2392,23 @@ def sheet_metal_gusset(
     GussetFeature calls return null); read back from the created feature and checked.
     faces = '[i, j]' (indices from analyze_model(faces)) and / or points = '[[x,y,z],[x,y,z]]' (meters, ON the faces):
         EXACTLY TWO faces - the sheet on one side of the bend and the flange on the other, inside the corner.
-    offset = REQUIRED (> 0): the distance along the bend from its START vertex (SolidWorks' reference point, returned
-        as reference_point) to the centre of the gusset; gusset_centre = reference_point + offset along the bend.
+    position = where the gusset's CENTRE stands, measured along the bend from its START (the end with the lowest
+        coordinate along it): ALWAYS where you say, however many gussets stand on the bend already. Give position OR offset.
+        SolidWorks measures an offset from a reference vertex it chooses (reference_point): the bend's start only for the
+        FIRST gusset - once a gusset has split the bend edge it is the start of one segment, or the opposite end with the
+        faces in the other order, and it is not stable between sessions. So position is built by MEASURING: create, read the
+        reference back, and when the centre is elsewhere take the feature out and recreate it at the offset that is right
+        for the reference SolidWorks used (a small probe gusset, taken out again, learns it when the first try builds
+        nothing); attempts[] says what was tried.
+    offset = the older form (> 0): the distance from SolidWorks' reference vertex (returned as reference_point) to the
+        centre of the gusset; gusset_centre = reference_point + offset along the bend. Right for a first gusset only.
     dimension_scheme 'indent_depth' (default): indent_depth + indent_width (the rib's inner faces are indent_width
         apart; a flat gusset of depth 4 mm and width 10 mm adds ~29.9 mm3 on 1.5 mm sheet, legs ~6.5 mm); 'profile':
         profile_length + profile_height, or profile_angle (degrees) instead of the height.
     thickness defaults to the sheet's. draft (+ draft_angle, default 5 deg), fillet_edges / fillet_inner_corners /
         fillet_outer_corners (+ their radii, default 1 mm) as in the PropertyManager; flip_sides swaps the dimensions.
-    Returns {feature, gusset_type, dimension_scheme, reference_point, gusset_centre, along_bend, body_before,
+    Returns {feature, gusset_type, dimension_scheme, reference_point, gusset_centre, position (the centre measured from
+    the bend's start), along_bend, bend_direction, bend_start_along, bend_length, faces_swapped, attempts[], body_before,
     body_after, volume_added (m3), feature_error, problems[], verified}. Bumps state_version. Errors: MISSING_PARAMETER,
     FACE_NOT_FOUND, INVALID_PARAMETER, NOT_SHEET_METAL, GUSSET_FAILED."""
     params: dict = {"gusset_type": gusset_type, "dimension_scheme": dimension_scheme, "flip_sides": flip_sides, "draft": draft,
@@ -2407,7 +2417,7 @@ def sheet_metal_gusset(
         params["faces"] = json.loads(faces) if faces.strip().startswith("[") else faces
     if points.strip():
         params["points"] = json.loads(points) if points.strip().startswith("[") else points
-    for key, val in (("offset", offset), ("indent_depth", indent_depth), ("indent_width", indent_width), ("profile_length", profile_length),
+    for key, val in (("offset", offset), ("position", position), ("indent_depth", indent_depth), ("indent_width", indent_width), ("profile_length", profile_length),
                      ("profile_height", profile_height), ("profile_angle", profile_angle)):
         if val:
             params[key] = val
@@ -2687,6 +2697,49 @@ def sheet_metal_forming_tool(
     if configuration.strip():
         params["configuration"] = configuration.strip()
     return _call("sheet_metal_forming_tool", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_corner_relief
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_corner_relief(
+    relief: Literal["circular", "square", "tear", "obround", "rectangular"] = "circular",
+    width: Optional[float] = None,
+    length: Optional[float] = None,
+    corner_type: Literal["two_bend"] = "two_bend",
+    tangent_to_bend: Optional[bool] = None,
+    center_on_bend_lines: Optional[bool] = None,
+    add_filleted_corners: Optional[bool] = None,
+    fillet_diameter: Optional[float] = None,
+) -> str:
+    """CORNER RELIEF: the relief SolidWorks cuts where the bends of two walls meet at a corner (the open corner of a
+    tray, a box made of edge flanges) - ONE feature for EVERY two-bend corner of the part. Lengths METERS.
+    relief: 'circular' (default), 'square', 'tear', 'obround' or 'rectangular' - the five types built and measured on
+        two-bend corners. (Bend waist, constant width, mixed, full round and suit case are THREE-bend reliefs: setting
+        one on two-bend corners killed SolidWorks, so they are not offered; corner_type 'three_bend' is refused.)
+    MEASURED on a 1.5 mm sheet (four corners): circular = `width` is the DIAMETER, at least 2 x the thickness (2.9 mm
+        builds nothing, 3 mm does): 3 / 4 / 6 mm remove 128.87 / 226.68 / 510.01 mm3; square and rectangular = `length`
+        is the side (3 / 4 / 5 / 6 mm remove 60.41 / 75.23 / 113.69 / 162.64 mm3), the width makes no difference, and
+        they are ONE cut (SolidWorks stores a square relief as the rectangular type: the corners read back as 9); tear =
+        fixed by the geometry (33.0 mm3, whatever the dimensions); obround needs BOTH, a slot about twice as long as it is
+        wide (6 x 3 and 8 x 4 mm build; 3 x 4 and 5 x 5 do not). SolidWorks wants length AND width above zero even where
+        one makes no difference: the one you leave out is 2 x the thickness. square / rectangular / obround need `length`.
+    tangent_to_bend, center_on_bend_lines, add_filleted_corners (+ fillet_diameter): options of the PropertyManager, set on
+        every corner and read back (center_on_bend_lines changes the cut; add_filleted_corners is taken by square /
+        rectangular reliefs and ignored by circular ones - reported as a problem). ratio_to_thickness is not offered: it
+        built nothing for every dimension tried.
+    The part needs exactly one solid body with two-bend corners (NO_CORNERS otherwise). The result is checked: rebuild
+        error 0 (else the feature is taken out again), every corner read back with the relief type asked (a square
+        relief reads back as rectangular and says so in `note`), the volume DOWN and the faces changed. Returns {feature, relief, corners_collected, definition{corner_count, corners[]},
+        width, length, body_before, body_after, volume_before, volume_after, volume_change, problems[], verified}.
+    Bumps state_version. Errors: INVALID_PARAMETER, MISSING_PARAMETER, NOT_SHEET_METAL, NO_CORNERS, CORNER_RELIEF_FAILED."""
+    params: dict = {"relief": relief, "corner_type": corner_type}
+    for key, val in (("width", width), ("length", length), ("tangent_to_bend", tangent_to_bend),
+                     ("center_on_bend_lines", center_on_bend_lines), ("add_filleted_corners", add_filleted_corners), ("fillet_diameter", fillet_diameter)):
+        if val is not None:
+            params[key] = val
+    return _call("sheet_metal_corner_relief", params)
 
 
 # ---------------------------------------------------------------------------
@@ -3710,7 +3763,10 @@ def submit_feature_graph(graph: str, fresh_document: bool = True) -> str:
         nodes build in array order (tree order is law); extrude/revolve/rib/sweep/sheet_metal/
         sketched_bend consume the IMMEDIATELY preceding sketch node; loft profiles, a sweep's
         path, pattern seeds and mirror features reference EARLIER nodes by id; an optional
-        graph-level material {name, library?} applies after the last node.
+        graph-level material {name, library?} applies after the last node. Sheet-metal DFM
+        nodes (hem, gusset, jog, forming_tool, tab_slot, miter_flange, corner_relief, convert_to_sheet_metal ...,
+        schema 0.8) reference geometry by anchors {near:[x,y,z]} and are strict: an unknown field
+        is an error, and a tool that measures a problem in its result stops the node (UNVERIFIED).
     fresh_document (default True): open a new blank document first — part graphs a part,
         assembly graphs (component/mate nodes) an assembly. Pass False to build into the
         CURRENT active document instead.

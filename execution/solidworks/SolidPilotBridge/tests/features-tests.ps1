@@ -62,8 +62,8 @@ Test 'G01 ROUNDED GUSSET (the pressed rib): built and read back; 6 faces added; 
 
 Test 'G02 the size follows the dimensions: a deeper / wider flat gusset (6 x 12) is bigger (volume, side faces 12 mm apart) than the 4 x 10 one; two gussets side by side stand at their own offsets' {
     Bent-Part
-    $a = Rg (Ok (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.01; offset = 0.02 }) 'gusset 4 x 10')
-    $b = Rg (Ok (Gusset @{ gusset_type = 'flat'; indent_depth = 0.006; indent_width = 0.012; offset = 0.07 }) 'gusset 6 x 12')
+    $a = Rg (Ok (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.01; position = 0.02 }) 'gusset 4 x 10')
+    $b = Rg (Ok (Gusset @{ gusset_type = 'flat'; indent_depth = 0.006; indent_width = 0.012; position = 0.07 }) 'gusset 6 x 12')
     Assert ($b.volume_added -gt 1.5 * $a.volume_added) "6 x 12 adds $($b.volume_added * 1e9) mm3, 4 x 10 adds $($a.volume_added * 1e9) mm3"
     Near $b.gusset_centre[0] 0.02 1e-9 'the second gusset: -50 + 70 = +20 mm'
     $xs = GussetXs; Assert ($xs -contains 14 -and $xs -contains 26) "the 12 mm wide gusset around x = +20: $($xs -join ', ')"; Assert ($xs -contains -35 -and $xs -contains -25) "the first one is untouched: $($xs -join ', ')"
@@ -91,6 +91,23 @@ Test 'G04 refusals before anything is built: one face, no offset, no dimensions,
     Fail (Invoke-Tool 'sheet_metal_gusset' @{ points = '[[0,0,0],[0,0,-0.0015]]'; indent_depth = 0.004; indent_width = 0.01; offset = 0.02 }) 'GUSSET_FAILED' 'the sheet top and bottom face: no bend between them' | Out-Null
     Fail (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.01; offset = 0.2 }) 'GUSSET_FAILED' 'an offset beyond the 100 mm bend' | Out-Null
     Assert ((StateVer) -eq $v0) 'a refused gusset leaves the state version alone'; Assert (@(FeatureNames).Count -eq $n0) "no feature was left behind: $n0 -> $(@(FeatureNames).Count)"
+}
+
+Test 'G05 POSITION is where the gusset stands, whatever SolidWorks takes as its reference: three gussets at 20 / 50 / 80 mm from the bend''s start stand at x = -30 / 0 / +30 (the bend edge is split after the first, so the offset form moved with the reference vertex), a gusset given the two faces in the OTHER order still stands where asked, and what cannot be placed is refused with the part untouched' {
+    Bent-Part
+    foreach ($pos in 0.02, 0.05, 0.08) {
+        $r = Rg (Ok (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.006; position = $pos }) "gusset at $pos"); Assert ($r.verified -eq $true -and -not $r.problems) "position $pos : $($r.problems -join ' | ') | attempts $($r.attempts | ConvertTo-Json -Compress -Depth 4)"
+        Near $r.position $pos 1e-6 "the centre stands $pos m from the bend's start"; Near $r.gusset_centre[0] (-0.05 + $pos) 1e-6 'x of the centre'
+    }
+    $xs = GussetXs; foreach ($want in -33, -27, -3, 3, 27, 33) { Assert ($xs -contains $want) "the inner side faces of the three 6 mm gussets: $($xs -join ', ')" }
+    $swapped = Rg (Ok (Invoke-Tool 'sheet_metal_gusset' @{ points = '[[0,0.0285,0.012],[0,0,0]]'; gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.006; position = 0.035 }) 'the faces in the other order'); Assert ($swapped.verified -eq $true) "swapped: $($swapped.problems -join ' | ')"
+    Near $swapped.gusset_centre[0] -0.015 1e-6 'still at 35 mm from the start (x = -15), the faces in the other order'
+    $v0 = StateVer; $n0 = @(FeatureNames).Count
+    Fail (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.006; position = 0.01; offset = 0.01 }) 'INVALID_PARAMETER' 'position and offset together' | Out-Null
+    $e = Fail (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.006; position = 0.2 }) 'GUSSET_FAILED' 'a position beyond the end of the 100 mm bend'; Assert ($e.error.message -like '*off the end of the bend*') $e.error.message
+    $e = Fail (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.006; position = 0.001 }) 'GUSSET_FAILED' 'a position before the start of the bend'; Assert ($e.error.message -like '*off the start of the bend*') $e.error.message
+    Fail (Gusset @{ gusset_type = 'flat'; indent_depth = 0.004; indent_width = 0.006; position = 0.0505 }) 'GUSSET_FAILED' 'a gusset on top of the one at 50 mm' | Out-Null
+    Assert (@(FeatureNames).Count -eq $n0) "no feature was left behind by the refusals (probes are taken out again): $n0 -> $(@(FeatureNames).Count)"; Assert ((StateVer) -eq $v0) 'refusals leave the state version alone'
 }
 
 
@@ -540,6 +557,60 @@ Test 'F10 A LOUVER ARRAY with create_pattern: a linear pattern of the placed lou
     Ok (Invoke-Tool 'create_pattern' @{ pattern_type = 'linear'; feature_name = $r.feature; spacing = 0.02; count = 4; direction = 'X' }) 'linear pattern' | Out-Null
     Near ((Volume) * 1e9) (9000 + 4 * 158.248) 0.01 'volume (mm3)'; $n = (Get-Faces).face_count; Assert ($n -eq 62) "faces $n"
     $names = FeatureNames; $lp = IndexOfType $names 'LPattern'; Assert ($lp -gt (IndexOfType $names 'FormToolInstance') -and $lp -lt (IndexOfType $names 'FlatPattern')) "order: $($names -join '; ')"
+}
+
+# ---- CORNER RELIEF (sheet_metal_corner_relief): the four-wall tray (100 x 60 mm, 25 mm walls, 1.5 mm sheet, 20103.843 mm3, 42 faces, FOUR two-bend corners) ----------------------------------------------------------
+# Measured by probe 88 (SetBodyScope is required; SolidWorks died twice while the relief types were tried - the tool offers only the five that were built). Volumes are the part's AFTER the relief, in mm3.
+function Relief([hashtable]$more) { Invoke-Tool 'sheet_metal_corner_relief' $more }
+function ReliefBuild([hashtable]$more, [string]$what) { Fixture 4; $r = Rg (Ok (Relief $more) $what); Assert ($r.verified -eq $true -and -not $r.problems) "$what : problems: $($r.problems -join ' | ')"; $r }
+
+Test 'R00 CORNER RELIEF, circular 3 mm: ONE feature for the four two-bend corners (SetBodyScope, Initialize, CollectAllCorners, CreateFeature), 42 -> 46 faces, 20103.843 -> 19974.975 mm3, every corner read back as circular with the 3 mm width' {
+    $r = ReliefBuild @{ relief = 'circular'; width = 0.003 } 'circular 3 mm'
+    Assert ($r.feature -like 'Corner Relief*' -and $r.feature_type -eq 'CornerRelief' -and $r.corners_collected -eq 4) "feature $($r.feature) [$($r.feature_type)], corners $($r.corners_collected)"
+    Assert ($r.body_before.faces -eq 42 -and $r.body_after.faces -eq 46) "faces $($r.body_before.faces) -> $($r.body_after.faces)"; Near ($r.volume_before * 1e9) 20103.843 0.01 'volume before (mm3)'; Near ($r.volume_after * 1e9) 19974.975 0.01 'volume after (mm3)'
+    Assert ($r.definition.corner_count -eq 4 -and @($r.definition.corners).Count -eq 4) "definition: $($r.definition | ConvertTo-Json -Compress -Depth 4)"
+    foreach ($k in $r.definition.corners) { Assert ($k.relief_type -eq 0) "corner $($k.index) relief type $($k.relief_type)"; Near $k.slot_width 0.003 1e-9 "corner $($k.index) width" }
+    $names = FeatureNames; Assert ((IndexOfType $names 'CornerRelief') -ge 0 -and (IndexOfType $names 'CornerRelief') -lt (IndexOfType $names 'FlatPattern')) "the relief goes in before the flat pattern: $($names -join '; ')"
+}
+
+Test 'R01 the circular relief follows its diameter: 3 / 4 / 6 mm remove 128.87 / 226.68 / 510.01 mm3 from the four corners (the length makes no difference)' {
+    foreach ($case in @(@(0.003, 19974.975, 46), @(0.004, 19877.163, 50), @(0.006, 19593.831, 50))) {
+        $r = ReliefBuild @{ relief = 'circular'; width = $case[0] } "circular $($case[0])"; Near ($r.volume_after * 1e9) $case[1] 0.01 "volume with a $($case[0] * 1000) mm circle"; Assert ($r.body_after.faces -eq $case[2]) "faces $($r.body_after.faces)" }
+    $r = ReliefBuild @{ relief = 'circular'; width = 0.003; length = 0.0015 } 'circular, another length'; Near ($r.volume_after * 1e9) 19974.975 0.01 'the length of a circular relief changes nothing'
+}
+
+Test 'R02 the other types: square and rectangular follow their LENGTH (3 / 4 / 5 / 6 mm), tear is fixed by the geometry, obround needs a slot about twice as long as wide (6 x 3, 8 x 4) - each read back, verified, the volume down' {
+    foreach ($case in @(@('square', 0.003, 0.003, 20043.438, 58), @('square', 0.004, 0.003, 20028.616, 70), @('square', 0.005, 0.003, 19990.158, 70), @('rectangular', 0.004, 0.003, 20028.616, 70), @('rectangular', 0.006, 0.003, 19941.200, 59),
+                        @('tear', 0.004, 0.003, 20070.879, 38), @('obround', 0.006, 0.003, 20011.248, 70), @('obround', 0.008, 0.004, 19967.719, 66))) {
+        $r = ReliefBuild @{ relief = $case[0]; length = $case[1]; width = $case[2] } "$($case[0]) $($case[1])"; Near ($r.volume_after * 1e9) $case[3] 0.01 "$($case[0]) volume"; Assert ($r.body_after.faces -eq $case[4]) "$($case[0]) $($case[1]) : faces $($r.body_after.faces)"
+        # a SQUARE relief is stored by SolidWorks as the rectangular type (9): the same length gives the same cut (square 4 and rectangular 4 both leave 20028.616 mm3, 70 faces)
+        Assert (@($r.definition.corners | Where-Object { $_.relief_type -ne @{ circular = 0; square = 9; tear = 3; obround = 5; rectangular = 9 }[$case[0]] }).Count -eq 0) "$($case[0]) : the corners kept another type: $(@($r.definition.corners | ForEach-Object { $_.relief_type }) -join ',')" }
+    $sq = ReliefBuild @{ relief = 'square'; length = 0.004; width = 0.003 } 'the square, for its note'; Assert ($sq.note -like '*rectangular type (9)*') 'a square relief says it is stored as the rectangular type'
+}
+
+Test 'R03 options: center_on_bend_lines changes the cut (50 faces, 19970.883 mm3) and reads back; tangent_to_bend reads back; add_filleted_corners is taken by a square relief (78 faces) and reported as a PROBLEM for a circular one that ignores it' {
+    $c = ReliefBuild @{ relief = 'circular'; width = 0.003; center_on_bend_lines = $true } 'centre on the bend lines'; Near ($c.volume_after * 1e9) 19970.883 0.01 'centred on the bend lines'; Assert ($c.body_after.faces -eq 50 -and $c.definition.corners[0].center_on_bend_lines -eq $true) "faces $($c.body_after.faces)"
+    $t = ReliefBuild @{ relief = 'circular'; width = 0.003; tangent_to_bend = $true } 'tangent'; Assert ($t.definition.corners[0].tangent_to_bend -eq $true) 'tangent_to_bend must read back'
+    $f = ReliefBuild @{ relief = 'square'; length = 0.004; width = 0.004; add_filleted_corners = $true; fillet_diameter = 0.002 } 'filleted square'; Assert ($f.body_after.faces -eq 78 -and $f.definition.corners[0].add_filleted_corners -eq $true) "filleted square: faces $($f.body_after.faces)"; Near ($f.volume_after * 1e9) 20032.460 0.01 'filleted square volume'
+    Fixture 4; $g = Rg (Ok (Relief @{ relief = 'circular'; width = 0.003; add_filleted_corners = $true; fillet_diameter = 0.002 }) 'filleted circle'); Assert ($g.verified -eq $false -and ($g.problems -join ' ') -like '*add_filleted_corners*') "a circular relief ignores filleted corners: $($g.problems -join ' | ')"
+}
+
+Test 'R04 refusals: a three-bend relief (it killed SolidWorks on two-bend corners), three_bend corners, ratio_to_thickness (builds nothing), a missing length / width, a circle under 2 x the thickness (SolidWorks builds nothing: taken as a failure, the part untouched), an obround that is too short' {
+    Fixture 4; $v0 = StateVer; $vol0 = Volume; $n0 = @(FeatureNames).Count
+    $e = Fail (Relief @{ relief = 'bend_waist'; width = 0.003 }) 'INVALID_PARAMETER' 'a three-bend relief'; Assert ($e.error.message -like '*three-bend*') $e.error.message
+    Fail (Relief @{ relief = 'circular'; width = 0.003; corner_type = 'three_bend' }) 'INVALID_PARAMETER' 'three_bend corners' | Out-Null
+    Fail (Relief @{ relief = 'circular'; width = 0.003; ratio_to_thickness = $true }) 'INVALID_PARAMETER' 'ratio_to_thickness' | Out-Null
+    Fail (Relief @{ relief = 'square' }) 'MISSING_PARAMETER' 'square without a length' | Out-Null
+    Fail (Relief @{ relief = 'obround'; length = 0.006 }) 'MISSING_PARAMETER' 'obround without a width' | Out-Null
+    Fail (Relief @{ relief = 'circular'; width = 0.003; add_filleted_corners = $true }) 'MISSING_PARAMETER' 'filleted corners without a diameter' | Out-Null
+    $e = Fail (Relief @{ relief = 'circular'; width = 0.0029 }) 'CORNER_RELIEF_FAILED' 'a circle under 2 x the thickness'; Assert ($e.error.message -like '*at least 2 x the thickness*') $e.error.message
+    Fail (Relief @{ relief = 'obround'; length = 0.003; width = 0.004 }) 'CORNER_RELIEF_FAILED' 'an obround that is too short' | Out-Null
+    Assert ((StateVer) -eq $v0) 'refusals leave the state version alone'; Near ((Volume) * 1e9) ($vol0 * 1e9) 1e-6 'the part is untouched'; Assert (@(FeatureNames).Count -eq $n0) "no feature was left behind: $n0 -> $(@(FeatureNames).Count)"
+}
+
+Test 'R05 a part without two-bend corners: a plain plate says NO_CORNERS (nothing touched); a part that is not sheet metal says NOT_SHEET_METAL' {
+    Fixture 0; $v0 = StateVer; $e = Fail (Relief @{ relief = 'circular'; width = 0.003 }) 'NO_CORNERS' 'a plain plate'; Assert ($e.error.message -like '*two-bend corners*') $e.error.message; Assert ((StateVer) -eq $v0) 'no state change'
+    Fresh-Part; Fail (Relief @{ relief = 'circular'; width = 0.003 }) 'NOT_SHEET_METAL' 'an empty part' | Out-Null
 }
 
 Invoke-Tool 'close_document' @{ save = $false; close_all = $true } | Out-Null
