@@ -113,6 +113,14 @@
     <Compile Include="Services\SolidWorksService.FilletMulti.cs" />
     <Compile Include="Services\SolidWorksService.SurfaceFeatures.cs" />
     <Compile Include="Services\SolidWorksService.FromFlat.cs" />
+    <Compile Include="Services\SolidWorksService.FromFlatRecipe.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalGusset.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalJog.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalLoftedBend.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalTabSlot.cs" />
+    <Compile Include="Services\SolidWorksService.MoveFace.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalSweptFlange.cs" />
+    <Compile Include="Services\SolidWorksService.SheetMetalFormingTool.cs" />
     <Compile Include="Services\ToolDispatcher.cs" />
     <Compile Include="Startup.cs" />
   </ItemGroup>

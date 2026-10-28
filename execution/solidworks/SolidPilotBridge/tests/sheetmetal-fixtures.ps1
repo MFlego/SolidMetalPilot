@@ -229,6 +229,31 @@ function Dxf-Summary([string]$path) {
     $len = 0.0; foreach ($x in $e) { $len += [double](Dxf-Length $x) }
     [pscustomobject]@{ count = $e.Count; by = $by; length = $len; entities = $e }
 }
+function Dxf-MmScale([string]$path) { $m = [regex]::Match([IO.File]::ReadAllText($path), '\$INSUNITS\s+70\s+(\d+)'); if ($m.Success -and $m.Groups[1].Value -eq '1') { 25.4 } else { 1.0 } }
+# the continuous lines and arcs of a DXF as comparable keys (mm, two decimals) - bend lines (HIDDEN) kept apart. SolidWorks writes a straight edge as ONE line where the input had two collinear pieces, so the
+# horizontal and vertical lines are merged along their line before they are compared. (A bend line drawn CONTINUOUS - the lip bends of the API export - is an outline key.)
+function Dxf-Keys([string]$path) {
+    $sc = Dxf-MmScale $path; $ci = [Globalization.CultureInfo]::InvariantCulture; $out = @{ outline = @(); bends = @() }; $h = @{}; $v = @{}
+    foreach ($e in (Read-Dxf $path)) {
+        $f = { param($c, $k = 0) [math]::Round([double]::Parse($e.d[$c][$k], $ci) * $sc, 2) }
+        if ($e.type -eq 'LINE') {
+            $x1 = & $f 10; $y1 = & $f 20; $x2 = & $f 11; $y2 = & $f 21
+            if ($e.d[6][0] -eq 'HIDDEN') { $out.bends += 'L ' + ((@("$x1,$y1", "$x2,$y2") | Sort-Object) -join ' - '); continue }
+            if ([math]::Abs($y1 - $y2) -lt 0.011) { $k = "$y1"; if (-not $h.ContainsKey($k)) { $h[$k] = @() }; $h[$k] += , @([math]::Min($x1, $x2), [math]::Max($x1, $x2)) }
+            elseif ([math]::Abs($x1 - $x2) -lt 0.011) { $k = "$x1"; if (-not $v.ContainsKey($k)) { $v[$k] = @() }; $v[$k] += , @([math]::Min($y1, $y2), [math]::Max($y1, $y2)) }
+            else { $out.outline += 'L ' + ((@("$x1,$y1", "$x2,$y2") | Sort-Object) -join ' - ') }
+        } elseif ($e.type -eq 'ARC') { $out.outline += "A $(& $f 10),$(& $f 20) r$(& $f 40) $([math]::Round([double]::Parse($e.d[50][0], $ci), 1))-$([math]::Round([double]::Parse($e.d[51][0], $ci), 1))" }
+        elseif ($e.type -eq 'CIRCLE') { $out.outline += "C $(& $f 10),$(& $f 20) r$(& $f 40)" }
+    }
+    foreach ($pair in @(@('H', $h), @('V', $v))) {
+        foreach ($k in $pair[1].Keys) {
+            $iv = @($pair[1][$k] | Sort-Object { $_[0] }); $cur = $null
+            foreach ($s in $iv) { if ($null -eq $cur) { $cur = @($s[0], $s[1]) } elseif ($s[0] -le $cur[1] + 0.011) { $cur[1] = [math]::Max($cur[1], $s[1]) } else { $out.outline += "$($pair[0]) $k $($cur[0])..$($cur[1])"; $cur = @($s[0], $s[1]) } }
+            if ($null -ne $cur) { $out.outline += "$($pair[0]) $k $($cur[0])..$($cur[1])" }
+        }
+    }
+    $out
+}
 # closed form of v4's flat blank WITH the inward offset: half = W/2 + D + rx + lip - 4 t - 6 r + 3 BA (and ry, H/2 along y), BA = pi/2 (r + K t). Returns @(X, Y) in the unit of the arguments.
 function V4Blank([hashtable]$g, [double]$k) {
     $ba = [math]::PI / 2 * ($g.r + $k * $g.t)

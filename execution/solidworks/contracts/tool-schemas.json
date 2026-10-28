@@ -108,27 +108,28 @@
   "output": "→ see execution-response.json"
  },
  "extrude_feature": {
-  "description": "Creates a 3D feature from the active sketch profile. Exits sketch mode automatically. feature_type discriminator: 'boss' (solid extrusion, default), 'cut' (material removal, requires existing solid body), 'revolve' (solid of revolution — requires angle and axis coords), 'sweep' (swept solid — requires path_sketch name), 'loft' (lofted solid — requires profiles JSON array of ≥2 sketch names).",
+  "description": "Creates a 3D feature from the active sketch profile. Exits sketch mode automatically. feature_type discriminator: 'boss' (solid extrusion, default), 'cut' (material removal, requires existing solid body), 'revolve' (solid of revolution \u2014 requires angle and axis coords), 'sweep' (swept solid \u2014 requires path_sketch name), 'loft' (lofted solid \u2014 requires profiles JSON array of \u22652 sketch names).",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "depth": "number (required for boss/cut — extrusion/cut depth in document units)",
+    "depth": "number (required for boss/cut \u2014 extrusion/cut depth in document units)",
     "feature_type": "string (optional, default 'boss': 'boss' | 'cut' | 'revolve' | 'sweep' | 'loft')",
-    "angle": "number (revolve only — revolution angle in DEGREES, default 360 = full revolve)",
-    "axis_x1": "number (revolve only — X of first endpoint of centerline segment)",
-    "axis_y1": "number (revolve only — Y of first endpoint of centerline segment)",
-    "axis_x2": "number (revolve only — X of second endpoint of centerline segment)",
-    "axis_y2": "number (revolve only — Y of second endpoint of centerline segment; default 0.001)",
-    "path_sketch": "string (sweep only — name of the sketch containing the sweep path)",
-    "profiles": "string (loft only — JSON array of sketch names e.g. '[\"Sketch1\",\"Sketch2\"]', minimum 2)",
-    "reverse": "boolean (boss/cut — flip feature direction; needed for a cut/boss sketched on a part face where material is on the opposite side)",
-    "through": "boolean (boss/cut — through-all end condition; depth ignored)",
-    "up_to_face_index": "integer (optional, default -1 = off; boss/cut — >= 0 selects the UP-TO-SURFACE end condition terminating exactly on that model face; index from analyze_model(faces), same enumeration as create_sketch face_index; depth ignored. The face is append-selected with Mark=1, the FeatureExtrusion3/FeatureCut4 end-condition reference mark)",
-    "mid_plane": "boolean (optional, default false; boss/cut — swEndCondMidPlane: extrudes SYMMETRICALLY about the sketch plane, depth = TOTAL width; conflicts with through/up_to_face_index)"
+    "angle": "number (revolve only \u2014 revolution angle in DEGREES, default 360 = full revolve)",
+    "axis_x1": "number (revolve only \u2014 X of first endpoint of centerline segment)",
+    "axis_y1": "number (revolve only \u2014 Y of first endpoint of centerline segment)",
+    "axis_x2": "number (revolve only \u2014 X of second endpoint of centerline segment)",
+    "axis_y2": "number (revolve only \u2014 Y of second endpoint of centerline segment; default 0.001)",
+    "path_sketch": "string (sweep only \u2014 name of the sketch containing the sweep path)",
+    "profiles": "string (loft only \u2014 JSON array of sketch names e.g. '[\"Sketch1\",\"Sketch2\"]', minimum 2)",
+    "reverse": "boolean (boss/cut \u2014 flip feature direction; needed for a cut/boss sketched on a part face where material is on the opposite side)",
+    "through": "boolean (boss/cut \u2014 through-all end condition; depth ignored)",
+    "up_to_face_index": "integer (optional, default -1 = off; boss/cut \u2014 >= 0 selects the UP-TO-SURFACE end condition terminating exactly on that model face; index from analyze_model(faces), same enumeration as create_sketch face_index; depth ignored. The face is append-selected with Mark=1, the FeatureExtrusion3/FeatureCut4 end-condition reference mark)",
+    "mid_plane": "boolean (optional, default false; boss/cut \u2014 swEndCondMidPlane: extrudes SYMMETRICALLY about the sketch plane, depth = TOTAL width; conflicts with through/up_to_face_index)",
+    "merge": "boolean (boss, default true; false keeps a boss that touches or overlaps an existing body as a body of its own - multi-body parts)"
    }
   },
-  "output": "→ see execution-response.json"
+  "output": "\u2192 see execution-response.json"
  },
  "create_rib": {
   "description": "Creates a RIB feature from the ACTIVE sketch (consumed, like extrude_feature). The profile is OPEN geometry — typically a single line whose extensions hit existing walls (e.g. the diagonal of an L-bracket); SolidWorks extends and thickens it. Uses IFeatureManager.InsertRib (void-returning — creation is verified from the feature tree; a no-op result is retried with the material direction flipped before failing RIB_FAILED). Draft parameters deliberately not exposed in v1.",
@@ -467,35 +468,38 @@
   "output": "→ see execution-response.json — applied material and library in CadState.Features"
  },
  "sheet_metal_feature": {
-  "description": "Creates sheet metal features on the active part. feature_type='base_flange': converts active sketch profile to sheet metal base (exits sketch automatically). feature_type='edge_flange': adds a default-profile flange to an edge — select it by edge_index (preferred) or a point (ex,ey,ez). feature_type='sketched_bend': bends the sheet about the bend line(s) in the ACTIVE sketch (IFeatureManager.InsertSheetMetal3dBend, CHM-verified; the pre-selected FIXED face stays put — pick it by fixed_face_index (analyze faces numbering, preferred) or fixed_x/y/z; a sketch with multiple bend lines yields one feature with one bend per line). feature_type='flat_pattern': unfolds all bends (requires existing base_flange).",
+  "description": "Creates sheet metal features on the active part. feature_type='base_flange': converts active sketch profile to sheet metal base (exits sketch automatically). feature_type='edge_flange': adds a default-profile flange to an edge \u2014 select it by edge_index (preferred) or a point (ex,ey,ez). feature_type='sketched_bend': bends the sheet about the bend line(s) in the ACTIVE sketch (IFeatureManager.InsertSheetMetal3dBend, CHM-verified; the pre-selected FIXED face stays put \u2014 pick it by fixed_face_index (analyze faces numbering, preferred) or fixed_x/y/z; a sketch with multiple bend lines yields one feature with one bend per line). feature_type='flat_pattern': unfolds all bends (requires existing base_flange). base_flange can take a SHEET-METAL GAUGE TABLE (gauge_table = full path of the .xlsx + gauge): UseGaugeTable is set BEFORE the path, the gauge name is spelled as the table spells it, and the thickness, radius and K-factor come from the table row.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "feature_type": "string (required: 'base_flange', 'edge_flange', 'edge_flange_sketch', 'edge_flange_finish', 'flat_pattern', or 'sketched_bend')",
-    "thickness": "number (base_flange — sheet thickness in meters, default 0.001)",
-    "bend_radius": "number (base_flange/sketched_bend — bend radius in meters, default 0.001; sketched_bend ignores it when use_default_radius=true)",
-    "k_factor": "number (base_flange — K-factor for bend allowance, default 0.5)",
-    "ex": "number (edge_flange — X coordinate of point on target edge)",
-    "ey": "number (edge_flange — Y coordinate of point on target edge)",
-    "ez": "number (edge_flange — Z coordinate of point on target edge)",
-    "flange_length": "number (edge_flange — flange length in meters, default 0.02)",
-    "angle": "number (edge_flange/sketched_bend — bend angle in degrees, default 90.0)",
-    "use_default_radius": "boolean (sketched_bend only, default false — true uses the sheet's default bend radius)",
-    "flip": "boolean (sketched_bend only, default false — reverse the bend direction)",
-    "bend_position": "string (sketched_bend only — 'centerline' (default), 'material_inside', 'material_outside', or 'bend_outside'; matches the `position` analyze_model(features) reports on an SM3dBend)",
-    "fixed_face_index": "integer (sketched_bend, optional — the FIXED face's index from analyze_model(faces); preferred over fixed_x/y/z)",
-    "fixed_x": "number (sketched_bend — X of a 3D point ON the fixed face, meters)",
-    "fixed_y": "number (sketched_bend — Y of a 3D point ON the fixed face, meters)",
-    "fixed_z": "number (sketched_bend — Z of a 3D point ON the fixed face, meters)",
-    "reverse_thickness": "boolean (base_flange only, default false — thicken to the OPPOSITE side of the sketch plane; derive from which side the original blank's faces sit, e.g. feature_map's SMBaseFlange created faces)",
-    "symmetric_thickness": "boolean (base_flange only, default false — thicken BOTH ways off the sketch plane (±t/2, mid-plane style); reproduce the original's own flag — it also sets the intrinsic sheet orientation downstream bend directions fold against)",
-    "clear_profile": "boolean (edge_flange_sketch only, default true — wipe the generated default rectangle so the caller redraws the ORIGINAL's custom profile via add_sketch_entity; the op leaves the generated sketch ACTIVE and echoes its MEASURED frame in result_geometry, then edge_flange_finish creates the flange from it — SW's documented custom-profile flow; the flange API accepts only a sketch IT generated)",
-    "edge_index": "integer (edge_flange/edge_flange_sketch/edge_flange_finish, optional — the attach edge's stable index from analyze_model(edges); PREFERRED over ex/ey/ez, whose coordinate pick can miss a real edge (KNOWN-LIMITATIONS #6). Since v0.7.0 the simple edge_flange accepts it too (shared SelectFlangeEdge). For the two-call custom-profile flow pass the SAME index to both calls — the sketch step adds no solid geometry, so edge enumeration is stable)",
-    "sketch_name": "string (base_flange, optional — the profile sketch to use when none is active; a rebuild such as an equation change closes the active sketch. NO_PROFILE_SKETCH when there is neither)"
+    "thickness": "number (base_flange \u2014 sheet thickness in meters, default 0.001)",
+    "bend_radius": "number (base_flange/sketched_bend \u2014 bend radius in meters, default 0.001; sketched_bend ignores it when use_default_radius=true)",
+    "k_factor": "number (base_flange \u2014 K-factor for bend allowance, default 0.5)",
+    "ex": "number (edge_flange \u2014 X coordinate of point on target edge)",
+    "ey": "number (edge_flange \u2014 Y coordinate of point on target edge)",
+    "ez": "number (edge_flange \u2014 Z coordinate of point on target edge)",
+    "flange_length": "number (edge_flange \u2014 flange length in meters, default 0.02)",
+    "angle": "number (edge_flange/sketched_bend \u2014 bend angle in degrees, default 90.0)",
+    "use_default_radius": "boolean (sketched_bend only, default false \u2014 true uses the sheet's default bend radius)",
+    "flip": "boolean (sketched_bend only, default false \u2014 reverse the bend direction)",
+    "bend_position": "string (sketched_bend only \u2014 'centerline' (default), 'material_inside', 'material_outside', or 'bend_outside'; matches the `position` analyze_model(features) reports on an SM3dBend)",
+    "fixed_face_index": "integer (sketched_bend, optional \u2014 the FIXED face's index from analyze_model(faces); preferred over fixed_x/y/z)",
+    "fixed_x": "number (sketched_bend \u2014 X of a 3D point ON the fixed face, meters)",
+    "fixed_y": "number (sketched_bend \u2014 Y of a 3D point ON the fixed face, meters)",
+    "fixed_z": "number (sketched_bend \u2014 Z of a 3D point ON the fixed face, meters)",
+    "reverse_thickness": "boolean (base_flange only, default false \u2014 thicken to the OPPOSITE side of the sketch plane; derive from which side the original blank's faces sit, e.g. feature_map's SMBaseFlange created faces)",
+    "symmetric_thickness": "boolean (base_flange only, default false \u2014 thicken BOTH ways off the sketch plane (\u00b1t/2, mid-plane style); reproduce the original's own flag \u2014 it also sets the intrinsic sheet orientation downstream bend directions fold against)",
+    "clear_profile": "boolean (edge_flange_sketch only, default true \u2014 wipe the generated default rectangle so the caller redraws the ORIGINAL's custom profile via add_sketch_entity; the op leaves the generated sketch ACTIVE and echoes its MEASURED frame in result_geometry, then edge_flange_finish creates the flange from it \u2014 SW's documented custom-profile flow; the flange API accepts only a sketch IT generated)",
+    "edge_index": "integer (edge_flange/edge_flange_sketch/edge_flange_finish, optional \u2014 the attach edge's stable index from analyze_model(edges); PREFERRED over ex/ey/ez, whose coordinate pick can miss a real edge (KNOWN-LIMITATIONS #6). Since v0.7.0 the simple edge_flange accepts it too (shared SelectFlangeEdge). For the two-call custom-profile flow pass the SAME index to both calls \u2014 the sketch step adds no solid geometry, so edge enumeration is stable)",
+    "sketch_name": "string (base_flange, optional \u2014 the profile sketch to use when none is active; a rebuild such as an equation change closes the active sketch. NO_PROFILE_SKETCH when there is neither)",
+    "gauge_table": "string (base_flange: the FULL path of a SolidWorks sheet-metal gauge table .xlsx; with gauge, the thickness / radius / K-factor come from the table row and the cut list's Sheet Metal Gauge reads e.g. 16GA.)",
+    "gauge": "string (base_flange with gauge_table: the gauge as the table spells it, e.g. '16 Gauge')",
+    "gauge_radius": "number (meters, base_flange with gauge_table: one of the table's radii; default the first)"
    }
   },
-  "output": "→ see execution-response.json"
+  "output": "\u2192 see execution-response.json"
  },
  "feature_data": {
   "description": "Typed read/write of ANY feature's full definition (the SolidWorks *FeatureData interface) with WRITE-VERIFY. action='list' lists the features (type, suppressed, error, sub-features, definition interface when known); action='get' returns every property of one feature with its value and access (rw/ro); action='set' writes properties / invokes definition methods / sets a custom bend allowance, calls ModifyDefinition and reads the definition back: result_geometry lists applied / ignored (value SolidWorks kept) / unknown / rejected and verified=false unless every requested value stuck (ModifyDefinition returns true even when a value was silently ignored). Lengths meters, angles radians. list/get do not change state_version; set bumps it.",
@@ -696,7 +700,7 @@
   "output": "→ see execution-response.json — result_geometry {feature, action, bends_selected, bends_in_part, bends_in_feature, fixed_face_deviation, size_before, size_after, flat, problems[], feature_error, verified}"
  },
  "sheet_metal_from_flat": {
-  "description": "FOLD FROM FLAT: build a sheet-metal part from the flat pattern in an ASCII DXF (the inverse of the flat-pattern export) in the active EMPTY part. The tool reads the outline (lines, arcs, splines, polylines; circles are holes) and the straight bend lines (HIDDEN lines, and continuous lines that hang off the outline or join two outline corners), cuts the outline into regions along the bend lines, finds the region that stays put and the tree of bends that leads to every other region, then builds on the Front Plane: a base flange from the outline, then sketched bends (SM3dBend) - the OUTERMOST bends first, so that every bend line is still in the flat plane - one feature per (depth, direction). SolidWorks folds a sketched bend along the whole (infinite) line, so a flat only folds this way when no region reaches across the line of a bend that is not its own: the plan checks that BEFORE anything is created and refuses a flat with closed corners (BEND_NOT_FOLDABLE, with the measured reach). Directions come from the linetypes (SolidWorks' API export: HIDDEN = hidden_direction, continuous = the other) or from `directions`. The closed-loop proof: the part's own flat pattern must have the size of the DXF outline. plan_only reads and plans without a document. Lengths meters. Bumps state_version (a build).",
+  "description": "FOLD FROM FLAT: build a sheet-metal part from the flat pattern in an ASCII DXF (the inverse of the flat-pattern export) in the active EMPTY part. The tool reads the outline (lines, arcs, splines, polylines; circles are holes) and the straight bend lines (HIDDEN lines, and continuous lines that hang off the outline or join two outline corners), cuts the outline into regions along the bend lines, finds the region that stays put and the tree of bends that leads to every other region, then builds on the Front Plane: a base flange from the outline, then sketched bends (SM3dBend) - the OUTERMOST bends first, so that every bend line is still in the flat plane - one feature per (depth, direction). SolidWorks folds a sketched bend along the whole (infinite) line, so a flat only folds this way when no region reaches across the line of a bend that is not its own: the plan checks that BEFORE anything is created and refuses a flat with closed corners (BEND_NOT_FOLDABLE, with the measured reach). Directions come from the linetypes (SolidWorks' API export: HIDDEN = hidden_direction, continuous = the other) or from `directions`. The closed-loop proof: the part's own flat pattern must have the size of the DXF outline. plan_only reads and plans without a document. Lengths meters. Bumps state_version (a build). strategy 'miter_flange' (or 'auto') is the FLANGE RECIPE for the flat of a box made by ONE mitre flange (closed corners, which sketched bends cannot fold): its bend lines are nested rectangles, from which the plate, the mitre flange's profile_points and the rip gap are computed; the build is a base flange plus one mitre flange, and the part's own flat pattern (blank, bends, outer cutting length) is the proof. Flats of another family are refused with RECIPE_NOT_APPLICABLE before anything is created.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -714,10 +718,157 @@
     "reach_tolerance": "number (meters, default 5e-5: how far a region may reach past the line of a bend that is not its own)",
     "allow_unfoldable": "boolean (default false: build even when a region reaches across a bend line; the finding stays as a warning)",
     "keep_on_failure": "boolean (default false: a build that fails half way takes its own features out again and says so; true keeps them for a look)",
-   "plan_only": "boolean (default false: read and plan only, no document needed)"
+    "plan_only": "boolean (default false: read and plan only, no document needed)",
+    "strategy": "string ('sketched_bends' (default; a refusal says when the flat is a mitre-flange box) | 'auto' (sketched bends when the flat folds that way, else the flange recipe) | 'miter_flange' (the flange recipe))",
+    "rip_gap": "number (meters; the flange recipe's gap at the mitres, default: read from where the wall edges of the DXF stand)"
    }
   },
-  "output": "\u2192 see execution-response.json \u2014 result_geometry: plan_only {units, scale_to_meters, entities, outline{pieces, kinds, holes, box, size}, bends[{index, from, to, length, linetype, depth, direction, near_region, far_region}], regions[], fixed_point, build_order[{depth, direction, bends}], warnings[]}; a build adds {steps[], features[], bends, bends_expected, flat_size, dxf_size, flat_deviation, folded_size, problems[], verified}"
+  "output": "\u2192 see execution-response.json \u2014 result_geometry: plan_only {units, scale_to_meters, entities, outline{pieces, kinds, holes, box, size}, bends[{index, from, to, length, linetype, depth, direction, near_region, far_region}], regions[], fixed_point, build_order[{depth, direction, bends}], warnings[]}; a build adds {steps[], features[], bends, bends_expected, flat_size, dxf_size, flat_deviation, folded_size, problems[], verified}; the flange recipe adds route 'miter_flange', recipe{kind, rings, centre, bend_half_spans_x, bend_half_spans_y, directions, free_strip, wall_edge_offset, plate, profile_points, rip_gap, flat_strips, profile_segments}, rip_gap, cutting_length, dxf_outline_length, cutting_length_deviation and sketched_bends_refusal"
+ },
+ "sheet_metal_gusset": {
+  "description": "SHEET-METAL GUSSET (SolidWorks' Rib): the pressed 'rounded' rib or the 'flat' triangular one in the inside corner of a bend, through CreateDefinition(swFmSMGusset) -> ISMGussetFeatureData -> CreateFeature (the InsertSheetMetalGussetFeature calls return null for every selection tried). SupportingFaces = the two faces the gusset joins (the sheet and the flange beside one bend); the gusset stands at the START vertex of the bend line (SolidWorks' reference point) plus `offset`. The feature is read back (type, thickness, offset, dimensions, draft), the reference point and the gusset centre are returned, and the added volume and face count are measured. Lengths meters, angles degrees. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "faces": "JSON string/array of two face indices from analyze_model(faces)",
+    "points": "JSON string/array of two points [[x,y,z], ...] (meters) ON the two faces (alternative or addition to faces; exactly two faces in all)",
+    "offset": "number (meters, > 0, required): distance along the bend from its start vertex to the centre of the gusset",
+    "gusset_type": "string ('rounded' (default) | 'flat')",
+    "dimension_scheme": "string ('indent_depth' (default) | 'profile')",
+    "indent_depth": "number (meters; required for scheme indent_depth)",
+    "indent_width": "number (meters; required for scheme indent_depth: the distance between the rib's inner faces)",
+    "profile_length": "number (meters; scheme profile)",
+    "profile_height": "number (meters; scheme profile, or use profile_angle)",
+    "profile_angle": "number (degrees; scheme profile, instead of the height)",
+    "thickness": "number (meters, default the sheet thickness)",
+    "flip_sides": "boolean (default false)",
+    "draft": "boolean (default false)",
+    "draft_angle": "number (degrees, default 5)",
+    "fillet_edges": "boolean (default false)",
+    "edge_fillet_radius": "number (meters, default 0.001)",
+    "fillet_inner_corners": "boolean (default false)",
+    "inner_corner_fillet_radius": "number (meters, default 0.001)",
+    "fillet_outer_corners": "boolean (default false)",
+    "outer_corner_fillet_radius": "number (meters, default 0.001)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, gusset_type, dimension_scheme, reference_point, gusset_centre, along_bend, body_before, body_after, volume_added, feature_error, problems[], verified}"
+ },
+ "sheet_metal_jog": {
+  "description": "JOG: an offset step in a flat sheet (two parallel bends of opposite direction) built from two SKETCHED BENDS - IModelDoc2.InsertSheetMetalJog is void and builds nothing, and the Jog PropertyManager does not take a posted OK. The second bend line is placed at the closed-form flat distance s = (h - (2 r + t)(1 - cos a)) / sin a + a (r + K t) from the first (h the plane-to-plane step between the top faces, r the inside radius, t the thickness, a the angle, K the K-factor), away from the fixed point; the far bend is folded first (both lines are still flat). The step is measured (the planar faces), the flat blank must not change, a failed build is taken back. The sheet's face must lie in the Front Plane. Lengths meters, angles degrees. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "line": "JSON string/array ([[x,y,z],[x,y,z]] meters: the FIRST bend line, a segment on the face; required)",
+    "fixed_point": "JSON string/array ([x,y,z] meters: a point ON the face on the side that stays put; required)",
+    "offset": "number (meters, > 0, required): the plane-to-plane step between the top faces of the two flat parts",
+    "angle": "number (degrees, default 90, 0 < a <= 90: the angle of each bend)",
+    "direction": "string ('up' (default) | 'down'): the part beyond the jog steps toward +Z or -Z",
+    "bend_radius": "number (meters, default the sheet's inside radius)",
+    "k_factor": "number (default the part's global K-factor)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {steps[], features[], bend_allowance, web, line_distance, second_line, offset, direction, angle, bend_radius, k_factor, planes_before, planes_after, flat_size, flat_deviation, problems[], verified}"
+ },
+ "sheet_metal_lofted_bend": {
+  "description": "LOFTED BEND: a sheet-metal transition between two OPEN profile sketches on parallel planes (IFeatureManager.InsertSheetMetalLoftedBend2). The call works for profiles it accepts - a single arc, a line, an L, a square U, a U of lines and an arc - and returns nothing for a closed profile, a rectangle left open by a tiny segment, a spline, or a chain that doubles back over itself. thickness_side side1 puts the material outside the first profile's curve, side2 inside; formed=true makes the smooth surface, false the faceted one; `facets` picks the one facet argument used (chord tolerance, number of bends, segment length, segment angle). The part's own flat pattern and cut list (bends) are the proof. Lengths meters, angles degrees. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "sketches": "JSON string/array of exactly two sketch names ([\"Sketch1\",\"Sketch2\"]; required): open profile sketches on parallel planes",
+    "thickness": "number (meters, > 0 and at most 0.05; required)",
+    "thickness_side": "string ('side1' (default: material outside the first profile's curve) | 'side2' (inside))",
+    "formed": "boolean (default false: faceted bends; true: the smooth formed surface)",
+    "bend_radius": "number (meters, default the thickness)",
+    "facets": "string ('chord_tolerance' (default) | 'number_of_bends' | 'segment_length' | 'segment_angle'): the one facet argument SolidWorks uses",
+    "chord_tolerance": "number (meters, default 0.0001; smaller = more facets)",
+    "number_of_bends": "integer (2..200, default 4 = 3 bends)",
+    "segment_length": "number (meters, default 0.01)",
+    "segment_angle": "number (degrees, default 5.7296)",
+    "refer_to_end_points": "boolean (default false)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, new_features[], thickness, thickness_side, formed, bend_radius, facets, body_before, body_after, volume, volume_added, sheet_thickness, bodies, flat_size, bends, blank_length, blank_width, cutting_length, problems[], verified}"
+ },
+ "sheet_metal_tab_slot": {
+  "description": "TAB AND SLOT: tabs on the edge of one body and matching slots in a face of another (a multi-body part), through CreateDefinition(swFmTabAndSlot) -> ITabAndSlotGroupData -> CreateFeature (there is no Insert call). The tab edge is an edge of the tab body's face that lies ON the slot face; that face (coplanar with the slot face, facing the other way) is the tab face - passing the tab body's side face makes SolidWorks return nothing. The tabs are spread equally between a start offset (from the edge's start vertex) and an end offset, one tab sits at the start; the slot is the tab plus the clearance at both ends; the height is blind (default: through the slot body). Two features are made (Tab on the tab body, Slot on the slot body); the proof is measured: volume gained by the tab body, volume lost by the slot body, planar faces at the expected distances along the edge. Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "edge": "integer (index from analyze_model(edges)): the tab edge; or edge_point",
+    "edge_point": "JSON string/array [x,y,z] (meters, ON the tab edge)",
+    "slot_face": "integer (index from analyze_model(faces)): the face of the other body the tabs pass through; or slot_face_point",
+    "slot_face_point": "JSON string/array [x,y,z] (meters, ON the slot face)",
+    "tab_face": "integer (optional; default the face beside the edge that is coplanar with the slot face and faces the other way); or tab_face_point",
+    "tab_face_point": "JSON string/array [x,y,z] (meters, optional)",
+    "tab_length": "number (meters, > 0, required): the length of each tab along the edge",
+    "count": "integer (1..100, default 3): the number of tabs, spread equally between the offsets",
+    "start_offset": "number (meters, default 0): from the edge's START vertex to the first tab",
+    "end_offset": "number (meters, default 0): from the edge's END vertex to the last tab",
+    "slot_clearance": "number (meters, default 0.0001): added at both ends of each slot along the edge",
+    "tab_thickness": "number (meters; default the thin side of the tab face)",
+    "tab_height": "number (meters; default through the slot body)",
+    "edge_treatment": "string ('none' (default) | 'fillet' | 'chamfer'): on the tabs' ends",
+    "edge_treatment_size": "number (meters; required with a fillet or chamfer)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, features[], tab_body, slot_body, count, tab_length, tab_thickness, tab_height, start_offset, end_offset, slot_clearance, edge_treatment, edge_length, edge_start, edge_end, tabs[{from, to}], before, after, tab_volume_added, slot_volume_removed, problems[], verified}"
+ },
+ "move_face": {
+  "description": "MOVE FACE: move, offset or rotate faces of a body in one feature (IFeatureManager.InsertMoveFace3), the middle step of the closed-corner chassis chain. The faces are selected with Mark = 1 (mark 0 returns null). Offset moves every face by `distance` along its normal (reverse = the other way); translate takes a displacement vector; rotate an axis (point + direction) and an angle. The offset distance is the dimension D1@Move Face<n>, so an equation can drive it. The definition is read back from the created feature and compared with the request, the volume change is measured. Lengths meters, angles degrees. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "faces": "JSON string/array of face indices from analyze_model(faces)",
+    "points": "JSON string/array of points [[x,y,z], ...] (meters) ON the faces (alternative or addition to faces)",
+    "move_type": "string ('offset' (default) | 'translate' | 'rotate')",
+    "distance": "number (meters, > 0; required for offset)",
+    "reverse": "boolean (default false: offset the other way / shrink)",
+    "translation": "JSON string/array [dx, dy, dz] (meters; required for translate)",
+    "rotation": "JSON string/object {axis_point:[x,y,z], axis_direction:[x,y,z], angle: degrees} (required for rotate)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, move_type, faces, reverse, distance, definition{move_type, distance, reverse, angle, faces}, dimensions[], body_before, body_after, volume_change, problems[], verified}"
+ },
+ "sheet_metal_swept_flange": {
+  "description": "SWEPT FLANGE: sheet metal made by sweeping an open profile along a path, through CreateDefinition(swFmSweptFlange) -> ISweptFlangeFeatureData -> CreateFeature (no Insert call exists). The path must be given as an array of DispatchWrapper holding the path sketch's FEATURE (the only form that gives a path type; the others return null), the profile as the ISketch. The swept flange is the first feature of an empty part and creates the Sheet-Metal feature from the thickness and radius. For a profile of straight segments along one straight path the result is checked against the closed forms (volume = cross-section x path, blank = developed profile x path). Lengths meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "profile_sketch": "string (required): name of the open profile sketch at the start of the path, on a plane perpendicular to it",
+    "path_sketch": "string (required): name of the path sketch (a line, a path with a corner, an arc)",
+    "thickness": "number (meters, > 0 and at most 0.05; required)",
+    "bend_radius": "number (meters, the INSIDE radius; default the thickness)",
+    "reverse": "boolean (default false: the profile is the outer face of the bends; true: the inner face)",
+    "start_offset": "number (meters, default 0): shortens the flange at the start of the path",
+    "end_offset": "number (meters, default 0): shortens the flange at the end of the path",
+    "trim_side_bends": "boolean (optional, passed on when given)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, new_features[], thickness, bend_radius, reverse, body_after, bodies, sheet_thickness, volume_added, flat_size, bends, blank[], expected_volume, expected_developed_profile, expected_blank[], material_side, checks_skipped[], problems[], verified}"
+ },
+ "sheet_metal_forming_tool": {
+  "description": "FORMING TOOL: places a tool of the design library (a .sldftp: louver, lance, emboss, extruded flange, rib) on a flat face of a sheet-metal part through IFeatureManager.InsertFormToolFeature. The face is selected as an object with a SelectData whose X/Y/Z are the pick point (the placement of the tool); the tool forms the sheet AWAY from that face; the rotation turns it about the pick point, counter-clockwise looking at the face from outside; Flip is ignored by SolidWorks and not offered. A curved face or the edge face of the sheet is refused; the feature is taken out again (the part is as it was) when it reports a rebuild error, when the configuration does not exist (SolidWorks would silently use Default), when it changed nothing, or when its footprint sticks out past the sheet's edge (SolidWorks would extend the sheet). action 'list' lists the library. Lengths meters, angles degrees. 'place' bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "action": "string ('place' (default) or 'list')",
+    "tool": "string (place: a bare name 'louver', a path relative to the forming tools folder 'louvers/louver', or the full path of a .sldftp)",
+    "point": "[x, y, z] (place: meters, ON the face; the placement of the tool, the face is found by it)",
+    "face": "integer (place: a face index from analyze_model(faces); alone the tool goes to a point of that face)",
+    "rotation": "number (place: degrees, default 0, counter-clockwise looking at the face from outside the part)",
+    "configuration": "string (place: a configuration of the tool file; default the tool's own; one that does not exist is refused)",
+    "filter_text": "string (list: text the relative path must contain)"
+   }
+  },
+  "output": "\u2192 see execution-response.json \u2014 place: result_geometry {feature, feature_type, tool, tool_path, configuration, rotation, point, pick_point, face_normal, pushes_toward, volume_before, volume_after, volume_change, centre_of_mass_before, centre_of_mass_after, body_before, body_after, feature_faces, pick_to_footprint, overhang_checked, problems[], verified}; list: {folders[], count, tools[{name, category, relative_path, path}]}"
  },
  "sheet_metal_convert": {
   "description": "IN-PROCESS HOST ONLY (the out-of-process exe answers Unknown tool). Convert to Sheet Metal of a surface or solid body, driven through SolidWorks' own PropertyManager (a WPF control in the SolidWorks process) in ONE call: the fixed face is preselected, the command started, the bend-edge and rip-sketch lists filled with genuine picks in the EXACT order given (selection order matters), the settings written into the PropertyManager and OK pressed; every pick is verified (list count + selection manager) and the created feature's definition is read back. Nothing is left open on failure. Lengths meters. Bumps state_version.",

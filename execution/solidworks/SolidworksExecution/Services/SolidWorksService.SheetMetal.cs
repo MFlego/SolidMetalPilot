@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Newtonsoft.Json.Linq;
 using SolidWorks.Interop.sldworks;
@@ -48,7 +49,7 @@ namespace SolidworksExecution.Services
                         "NO_ACTIVE_DOCUMENT", "No active document found in SolidWorks.");
 
                 var featureMgr = modelDoc.FeatureManager;
-                IFeature feature = null;
+                IFeature feature = null; JObject gaugeInfo = null;
 
                 if (featureType == "base_flange")
                 {
@@ -96,6 +97,34 @@ namespace SolidworksExecution.Services
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                             "SHEET_METAL_FAILED", "CreateDefinition(swFmBaseFlange) returned null.");
 
+                    // A SHEET-METAL GAUGE TABLE (probe 85; the API route was "unresolved" until the ORDER was found): UseGaugeTable = true FIRST, then the FULL path of the .xlsx, then the gauge spelled exactly as the
+                    // table spells it (names carry trailing blanks: "16 Gauge "). The thickness, the bend radius (the table's first available radius unless gauge_radius says another) and the K-factor then come from
+                    // the table row, and the cut list's "Sheet Metal Gauge" reads e.g. "16GA.". thickness / bend_radius / k_factor of this call are ignored in that mode.
+                    string gaugeTable = p?.Value<string>("gauge_table"), gaugeName = p?.Value<string>("gauge"); double? gaugeRadius = p?.Value<double?>("gauge_radius");
+                    if (string.IsNullOrWhiteSpace(gaugeTable) && !string.IsNullOrWhiteSpace(gaugeName))
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "MISSING_PARAMETER", "gauge_table: the FULL path of the gauge table (.xlsx) the gauge '" + gaugeName + "' belongs to.");
+                    if (!string.IsNullOrWhiteSpace(gaugeTable))
+                    {
+                        if (string.IsNullOrWhiteSpace(gaugeName))
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "MISSING_PARAMETER", "gauge: the gauge of the table (e.g. '16 Gauge') - gauge_table needs it.");
+                        if (!System.IO.File.Exists(gaugeTable))
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "FILE_NOT_FOUND", "No gauge table at '" + gaugeTable + "' (the FULL path of the .xlsx, e.g. <install>/lang/english/Sheet Metal Gauge Tables/sample table - steel - english units.xlsx).");
+                        bfData.UseGaugeTable = true; bfData.GaugeTablePath = System.IO.Path.GetFullPath(gaugeTable);
+                        var gauges = (bfData.GetTableThicknesses() as object[] ?? new object[0]).Select(o => o.ToString()).ToArray();
+                        string exactGauge = gauges.FirstOrDefault(g => string.Equals(g.Trim(), gaugeName.Trim(), StringComparison.OrdinalIgnoreCase));
+                        if (exactGauge == null)
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "GAUGE_NOT_FOUND", "The table has no gauge '" + gaugeName + "'; its gauges: " + (gauges.Length == 0 ? "(none read: is the file a SolidWorks gauge table?)" : string.Join(", ", gauges.Select(g => g.Trim()).ToArray())) + ".");
+                        bfData.ThicknessTableName = exactGauge;
+                        bfData.OverrideThickness = false;
+                        if (gaugeRadius.HasValue) { bfData.OverrideRadius = true; bfData.BendRadius = gaugeRadius.Value; } else bfData.OverrideRadius = false;
+                        bfData.OverrideKFactor = false;
+                        bool gRevThick = p?.Value<bool?>("reverse_thickness") ?? false; bfData.ReverseThickness = gRevThick; bfData.ReverseDirection = gRevThick;
+                        if (p?.Value<bool?>("symmetric_thickness") == true) bfData.SymmetricThickness = true;
+                        gaugeInfo = new JObject { ["gauge_table"] = bfData.GaugeTablePath, ["gauge"] = exactGauge.Trim(), ["table_thickness"] = bfData.TableThickness, ["table_radius"] = bfData.TableRadius, ["table_k_factor"] = bfData.TableKFactor };
+                        feature = featureMgr.CreateFeature(bfData) as IFeature;
+                        goto baseFlangeDone;
+                    }
+
                     bfData.OverrideThickness = true;
                     bfData.Thickness = thickness;
                     // Thickness DIRECTION matters for reproduction: a wrong side puts every downstream
@@ -129,6 +158,7 @@ namespace SolidworksExecution.Services
                         try { if (!ApplyGlobalKFactor(modelDoc, kFactor)) ExecLog.Write($"base_flange: global K-factor {kFactor} could not be applied"); }
                         catch (Exception kex) { ExecLog.Write($"base_flange: global K-factor {kFactor} failed: {kex.Message}"); }
                     }
+                    baseFlangeDone:;
                 }
                 else if (featureType == "edge_flange")
                 {
@@ -485,6 +515,7 @@ namespace SolidworksExecution.Services
                         Features = new List<string> { feature.Name },
                         Dimensions = new List<string>()
                     },
+                    ResultGeometry = gaugeInfo,
                     Error = null
                 };
 

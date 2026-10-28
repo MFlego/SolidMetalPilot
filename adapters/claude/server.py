@@ -481,6 +481,7 @@ def extrude_feature(
     through: bool = False,
     up_to_face_index: int = -1,
     mid_plane: bool = False,
+    merge: bool = True,
 ) -> str:
     """Extrude/feature the active sketch profile.
     feature_type='boss' (default): solid extrusion, requires depth.
@@ -498,6 +499,8 @@ def extrude_feature(
         material on the opposite side from the default. DIRECTION IS THE SILENT ONE: a feature built
         on the wrong side leaves volume, area and topology identical (recipe R6b/R14), so bind the
         sketch plane to a face explicitly and read one coordinate back afterwards.
+    merge (boss, default True): False keeps a boss that touches or overlaps an existing body as a body of its
+        OWN (multi-body parts: the tab body and the slot body of sheet_metal_tab_slot, a lid, an accessory).
     Sheet metal: a 'cut' on a sheet-metal body (holes after a bend included) is handled
         automatically — Normal Cut, inserted before the Flat-Pattern; no special params.
     On COMPLETED the result carries result_geometry {volume, faces, edges} after the feature — verify
@@ -517,6 +520,7 @@ def extrude_feature(
             "through": through,
             "up_to_face_index": up_to_face_index,
             "mid_plane": mid_plane,
+            "merge": merge,
         },
     )
 
@@ -1603,6 +1607,9 @@ def sheet_metal_feature(
     clear_profile: bool = True,
     edge_index: int = -1,
     sketch_name: str = "",
+    gauge_table: str = "",
+    gauge: str = "",
+    gauge_radius: Optional[float] = None,
 ) -> str:
     """Create sheet metal features on the active part. Lengths METERS, angles DEGREES.
 
@@ -1611,6 +1618,12 @@ def sheet_metal_feature(
         mode. k_factor is applied through the sheet-metal override (creates D2@Sheet-Metal1) when it differs from the
         template's.
         thickness · bend_radius (default = thickness) · k_factor (0.5).
+        SHEET-METAL GAUGE TABLE: gauge_table = the FULL path of a SolidWorks gauge table (.xlsx, e.g.
+        '<install>\\lang\\english\\Sheet Metal Gauge Tables\\sample table - steel - english units.xlsx') + gauge =
+        a gauge of it ('16 Gauge'; a wrong one lists the table's gauges, GAUGE_NOT_FOUND). The thickness, bend radius
+        (the table's first available radius, or gauge_radius in METERS) and K-factor then come from the TABLE ROW
+        (thickness / bend_radius / k_factor of this call are ignored) and the cut list's 'Sheet Metal Gauge' reads
+        '16GA.'. The result carries {gauge_table, gauge, table_thickness, table_radius, table_k_factor}.
         THICKENING SIDE IS A BUILD DECISION, and it is silent when wrong: `reverse_thickness`
         thickens to the OPPOSITE side of the sketch plane, `symmetric_thickness` splits ±t/2.
         Rebuilding an analyzed part, replay the original's own flags (analyze_model(features)
@@ -1662,6 +1675,11 @@ def sheet_metal_feature(
         params["edge_index"] = edge_index
     if sketch_name:
         params["sketch_name"] = sketch_name
+    if gauge_table:
+        params["gauge_table"] = gauge_table
+        params["gauge"] = gauge
+        if gauge_radius is not None:
+            params["gauge_radius"] = gauge_radius
     return _call("sheet_metal_feature", params)
 
 
@@ -2279,6 +2297,8 @@ def sheet_metal_from_flat(
     allow_unfoldable: bool = False,
     keep_on_failure: bool = False,
     plan_only: bool = False,
+    strategy: Literal["sketched_bends", "auto", "miter_flange"] = "sketched_bends",
+    rip_gap: Optional[float] = None,
 ) -> str:
     """FOLD FROM FLAT: build a sheet-metal part from the flat pattern in an ASCII DXF - the inverse of the flat-pattern
     export. The tool reads the outline (lines, arcs, splines, circles = holes) and the straight BEND LINES, cuts the
@@ -2300,6 +2320,20 @@ def sheet_metal_from_flat(
         with BEND_NOT_FOLDABLE and the measured reach: such a part needs corner reliefs wider than the bend zone, or a
         part built with flanges / Convert. (allow_unfoldable=True tries anyway.) reach_tolerance (default 0.05 mm)
         is how far a region may reach; tolerance (default 0.01 mm) joins end points.
+    strategy = how to build: 'sketched_bends' (default, as above; a refusal says when the flat is a mitre-flange box),
+        'miter_flange' (the FLANGE RECIPE) or 'auto' (sketched bends when the flat folds that way, else the recipe).
+        THE FLANGE RECIPE rebuilds the flat of a box made by ONE mitre flange - a base flange plus one mitre flange round
+        the plate with a wall / rim / lip profile, the flat whose corners are closed - which sketched bends cannot fold.
+        It is recognised by its bend lines: NESTED RECTANGLES (a ring of four lines per bend, symmetric about the centre,
+        the same strip width on every side). From the rings and the sheet (thickness, bend_radius, k_factor) it computes the
+        plate rectangle (outer sharp) and the mitre flange's profile_points and reads the rip gap from where the wall
+        edges stand, builds sketch_center_rectangle -> base flange -> sheet_metal_miter_flange, and proves it: the part's
+        own flat pattern must have the DXF's blank, the bends of the DXF and its outer cutting length. rip_gap (meters)
+        overrides the gap read from the DXF. Not of this family (RECIPE_NOT_APPLICABLE, before anything is created):
+        strips that differ from side to side (differential flange sizes), bend lines not parallel to an axis, a first
+        bend that folds down, holes (reported as problems). plan_only with the recipe returns {route, recipe{kind, rings,
+        centre, bend_half_spans_x/y, directions, free_strip, plate, profile_points, rip_gap, flat_strips}, bends[],
+        sketched_bends_refusal}.
     fixed_point = '[x, y]' (meters, DXF coordinates x units): a point of the region that stays put.
     A build that fails half way (SolidWorks refuses a bend) takes its own features out again - the part is empty
     as it was - and says so in the error; keep_on_failure=True keeps them for a look.
@@ -2310,12 +2344,13 @@ def sheet_metal_from_flat(
     problems[], verified}: the part's OWN flat pattern must have the size of the DXF outline and the part the bends
     of the DXF. Bumps state_version. Errors: MISSING_PARAMETER, FILE_NOT_FOUND, DXF_UNREADABLE, DXF_INVALID,
     DXF_BINARY, UNITS_UNKNOWN, NO_OUTLINE, OPEN_OUTLINE, AMBIGUOUS_OUTLINE, MULTIPLE_PARTS, UNSUPPORTED_BEND_LINE,
-    BEND_LINE_NOT_ON_OUTLINE, BEND_GRAPH_NOT_A_TREE, BEND_NOT_FOLDABLE, FIXED_POINT_OUTSIDE, INVALID_PARAMETER,
-    NOT_EMPTY_PART, WRONG_DOCUMENT_TYPE, BUILD_STEP_FAILED."""
+    BEND_LINE_NOT_ON_OUTLINE, BEND_GRAPH_NOT_A_TREE, BEND_NOT_FOLDABLE, RECIPE_NOT_APPLICABLE, FIXED_POINT_OUTSIDE,
+    INVALID_PARAMETER, NOT_EMPTY_PART, WRONG_DOCUMENT_TYPE, BUILD_STEP_FAILED."""
     params: dict = {"dxf_path": dxf_path, "angle": angle, "units": units, "hidden_direction": hidden_direction,
-                    "allow_unfoldable": allow_unfoldable, "keep_on_failure": keep_on_failure, "plan_only": plan_only}
+                    "allow_unfoldable": allow_unfoldable, "keep_on_failure": keep_on_failure, "plan_only": plan_only,
+                    "strategy": strategy}
     for key, val in (("thickness", thickness), ("bend_radius", bend_radius), ("k_factor", k_factor),
-                     ("tolerance", tolerance), ("reach_tolerance", reach_tolerance)):
+                     ("tolerance", tolerance), ("reach_tolerance", reach_tolerance), ("rip_gap", rip_gap)):
         if val is not None:
             params[key] = val
     if directions.strip():
@@ -2323,6 +2358,335 @@ def sheet_metal_from_flat(
     if fixed_point.strip():
         params["fixed_point"] = json.loads(fixed_point) if fixed_point.strip().startswith("[") else fixed_point
     return _call("sheet_metal_from_flat", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_gusset
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_gusset(
+    faces: str = "",
+    points: str = "",
+    offset: float = 0.0,
+    gusset_type: Literal["rounded", "flat"] = "rounded",
+    dimension_scheme: Literal["indent_depth", "profile"] = "indent_depth",
+    indent_depth: float = 0.0,
+    indent_width: float = 0.0,
+    profile_length: float = 0.0,
+    profile_height: float = 0.0,
+    profile_angle: float = 0.0,
+    thickness: Optional[float] = None,
+    flip_sides: bool = False,
+    draft: bool = False,
+    draft_angle: Optional[float] = None,
+    fillet_edges: bool = False,
+    edge_fillet_radius: Optional[float] = None,
+    fillet_inner_corners: bool = False,
+    inner_corner_fillet_radius: Optional[float] = None,
+    fillet_outer_corners: bool = False,
+    outer_corner_fillet_radius: Optional[float] = None,
+) -> str:
+    """SHEET-METAL GUSSET (SolidWorks' Rib): the pressed 'rounded' rib or the 'flat' triangular one in the inside
+    corner of a bend. Lengths METERS, angles DEGREES. Built through CreateDefinition(swFmSMGusset) (the InsertSheetMetal
+    GussetFeature calls return null); read back from the created feature and checked.
+    faces = '[i, j]' (indices from analyze_model(faces)) and / or points = '[[x,y,z],[x,y,z]]' (meters, ON the faces):
+        EXACTLY TWO faces - the sheet on one side of the bend and the flange on the other, inside the corner.
+    offset = REQUIRED (> 0): the distance along the bend from its START vertex (SolidWorks' reference point, returned
+        as reference_point) to the centre of the gusset; gusset_centre = reference_point + offset along the bend.
+    dimension_scheme 'indent_depth' (default): indent_depth + indent_width (the rib's inner faces are indent_width
+        apart; a flat gusset of depth 4 mm and width 10 mm adds ~29.9 mm3 on 1.5 mm sheet, legs ~6.5 mm); 'profile':
+        profile_length + profile_height, or profile_angle (degrees) instead of the height.
+    thickness defaults to the sheet's. draft (+ draft_angle, default 5 deg), fillet_edges / fillet_inner_corners /
+        fillet_outer_corners (+ their radii, default 1 mm) as in the PropertyManager; flip_sides swaps the dimensions.
+    Returns {feature, gusset_type, dimension_scheme, reference_point, gusset_centre, along_bend, body_before,
+    body_after, volume_added (m3), feature_error, problems[], verified}. Bumps state_version. Errors: MISSING_PARAMETER,
+    FACE_NOT_FOUND, INVALID_PARAMETER, NOT_SHEET_METAL, GUSSET_FAILED."""
+    params: dict = {"gusset_type": gusset_type, "dimension_scheme": dimension_scheme, "flip_sides": flip_sides, "draft": draft,
+                    "fillet_edges": fillet_edges, "fillet_inner_corners": fillet_inner_corners, "fillet_outer_corners": fillet_outer_corners}
+    if faces.strip():
+        params["faces"] = json.loads(faces) if faces.strip().startswith("[") else faces
+    if points.strip():
+        params["points"] = json.loads(points) if points.strip().startswith("[") else points
+    for key, val in (("offset", offset), ("indent_depth", indent_depth), ("indent_width", indent_width), ("profile_length", profile_length),
+                     ("profile_height", profile_height), ("profile_angle", profile_angle)):
+        if val:
+            params[key] = val
+    for key, val in (("thickness", thickness), ("draft_angle", draft_angle), ("edge_fillet_radius", edge_fillet_radius),
+                     ("inner_corner_fillet_radius", inner_corner_fillet_radius), ("outer_corner_fillet_radius", outer_corner_fillet_radius)):
+        if val is not None:
+            params[key] = val
+    return _call("sheet_metal_gusset", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_jog
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_jog(
+    line: str,
+    fixed_point: str,
+    offset: float,
+    angle: float = 90.0,
+    direction: Literal["up", "down"] = "up",
+    bend_radius: Optional[float] = None,
+    k_factor: Optional[float] = None,
+) -> str:
+    """JOG: an offset step in a flat sheet - two parallel bends of opposite direction - built from two SKETCHED BENDS
+    (SolidWorks' own Jog feature cannot be made from the API). Lengths METERS, angles DEGREES. The sheet's face must
+    lie in the Front Plane (z = 0) and be flat.
+    line = '[[x,y,z],[x,y,z]]': the FIRST bend line, a segment on the face (the line is infinite for SolidWorks).
+    fixed_point = '[x,y,z]': a point ON the face on the side that stays put; the other side steps.
+    offset = the plane-to-plane step h: the distance between the TOP faces of the two flat parts. The second bend line
+    is drawn for you at the flat distance  s = (h - (2 r + t)(1 - cos a)) / sin a + a (r + K t)  (r inside radius,
+    t thickness, a the bend angle, K the K-factor) from the first, away from the fixed point; offsets smaller than
+    (2 r + t)(1 - cos a) are refused (JOG_TOO_SMALL).
+    angle (default 90, > 0 and <= 90): the angle of each bend. direction 'up' = the part beyond the jog steps toward
+    +Z, 'down' toward -Z. bend_radius defaults to the sheet's, k_factor to the part's global K.
+    The far bend is folded first (both lines are still flat); the flat blank does not change; a build that fails
+    half way is taken back. The folded length along the jog is  L - (s + BA) + (2 r + t) sin a + web cos a  with the
+    web = s - BA, BA = a (r + K t).
+    Returns {steps[], features[], bend_allowance, web, line_distance, second_line, planes_before, planes_after,
+    flat_size, flat_deviation, problems[], verified}. Bumps state_version. Errors: MISSING_PARAMETER,
+    INVALID_PARAMETER, JOG_TOO_SMALL, NOT_SHEET_METAL, BUILD_STEP_FAILED."""
+    params: dict = {"line": json.loads(line) if line.strip().startswith("[") else line,
+                    "fixed_point": json.loads(fixed_point) if fixed_point.strip().startswith("[") else fixed_point,
+                    "offset": offset, "angle": angle, "direction": direction}
+    if bend_radius is not None:
+        params["bend_radius"] = bend_radius
+    if k_factor is not None:
+        params["k_factor"] = k_factor
+    return _call("sheet_metal_jog", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_lofted_bend
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_lofted_bend(
+    sketches: str,
+    thickness: float,
+    thickness_side: Literal["side1", "side2"] = "side1",
+    formed: bool = False,
+    bend_radius: Optional[float] = None,
+    facets: Literal["chord_tolerance", "number_of_bends", "segment_length", "segment_angle"] = "chord_tolerance",
+    chord_tolerance: Optional[float] = None,
+    number_of_bends: Optional[int] = None,
+    segment_length: Optional[float] = None,
+    segment_angle: Optional[float] = None,
+    refer_to_end_points: bool = False,
+) -> str:
+    """LOFTED BEND: a sheet-metal transition between two OPEN profile sketches on parallel planes (round-to-square
+    duct, funnel, cone). Lengths METERS, angles DEGREES. The lofted bend creates the sheet-metal feature itself
+    (thickness, radius) - the part may hold nothing but the two sketches and their planes.
+    sketches = '["Sketch1","Sketch2"]': two sketches, each ONE continuous OPEN chain of lines and / or arcs, the two of
+        the same kind (an arc and an arc, a U and a U ...). MEASURED: a single arc, a line, an L, a square U and a U
+        of two lines + an arc all build; a CLOSED profile, a rectangle left open by a tiny closing segment, a spline,
+        and a chain that doubles back over itself are refused (LOFTED_BEND_FAILED).
+    thickness = REQUIRED. thickness_side: 'side1' (default) puts the material outside the first profile's curve,
+        'side2' inside (the first profile is then the outer skin).
+    formed=False (default): the FACETED lofted bend (bends = the facets); formed=True: the smooth formed surface
+        (two arcs: 6 faces, 1 bend).
+    facets picks the ONE facet argument SolidWorks uses (measured): 'chord_tolerance' (default; chord_tolerance, default
+        0.0001 m: smaller = more facets), 'number_of_bends' (number_of_bends facets, default 4 = 3 bends),
+        'segment_length' (segment_length m, default 0.01) or 'segment_angle' (segment_angle degrees, default 5.73).
+    bend_radius default = thickness. refer_to_end_points as in the PropertyManager (no effect on arcs).
+    Returns {feature, new_features[], body_before, body_after, volume, volume_added, sheet_thickness, bodies, flat_size,
+    bends, blank_length, blank_width, cutting_length, problems[], verified}: the part's own flat pattern must exist and
+    the cut list count bends. Bumps state_version. Errors: MISSING_PARAMETER, INVALID_PARAMETER, SKETCH_NOT_FOUND,
+    SELECTION_FAILED, LOFTED_BEND_FAILED."""
+    params: dict = {"sketches": json.loads(sketches) if sketches.strip().startswith("[") else sketches, "thickness": thickness,
+                    "thickness_side": thickness_side, "formed": formed, "facets": facets, "refer_to_end_points": refer_to_end_points}
+    for key, val in (("bend_radius", bend_radius), ("chord_tolerance", chord_tolerance), ("number_of_bends", number_of_bends),
+                     ("segment_length", segment_length), ("segment_angle", segment_angle)):
+        if val is not None:
+            params[key] = val
+    return _call("sheet_metal_lofted_bend", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_tab_slot
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_tab_slot(
+    tab_length: float,
+    edge: Optional[int] = None,
+    edge_point: str = "",
+    slot_face: Optional[int] = None,
+    slot_face_point: str = "",
+    tab_face: Optional[int] = None,
+    tab_face_point: str = "",
+    count: int = 3,
+    start_offset: float = 0.0,
+    end_offset: float = 0.0,
+    slot_clearance: float = 0.0001,
+    tab_thickness: Optional[float] = None,
+    tab_height: Optional[float] = None,
+    edge_treatment: Literal["none", "fillet", "chamfer"] = "none",
+    edge_treatment_size: float = 0.0,
+) -> str:
+    """TAB AND SLOT: tabs on the edge of one body and matching slots in a face of another (a multi-body part -
+    a wall standing on a plate, a shelf, a lid). Lengths METERS. The tabs go into the slot body; the tool makes two
+    features, 'Tab and Slot-Tab<n>' on the tab body and 'Tab and Slot-Slot<n>' on the slot body.
+    edge = index from analyze_model(edges), or edge_point = '[x,y,z]' ON the edge: the TAB EDGE - an edge of the tab
+        body's face that lies ON the slot face (a wall's bottom edge, the wall resting on the plate).
+    slot_face = index from analyze_model(faces) or slot_face_point = '[x,y,z]' ON it: the face of the OTHER body that
+        the tabs pass through (the plate's top face).
+    tab_face / tab_face_point (optional): the tab body's face that touches the slot face. Default: the one of the
+        two faces beside the edge that is coplanar with the slot face and faces the other way. (Passing the tab
+        body's SIDE face makes SolidWorks return nothing - that was the whole trouble.)
+    tab_length (REQUIRED, along the edge); count (default 3); start_offset / end_offset: the first tab starts
+        start_offset from the edge's START vertex (reported as edge_start / edge_end), the last ends end_offset
+        from its END vertex; the tabs are spread EQUALLY between (one tab sits at the start). MEASURED: the 'spacing
+        length' option of the PropertyManager changes nothing through the API, the count decides.
+    slot_clearance (default 0.1 mm): each slot is the tab plus this on both ends along the edge.
+    tab_thickness (default: the thin side of the tab face), tab_height (default: through the slot body = its extent
+        along the slot face's normal; BLIND only - 'up to surface' / 'offset from surface' return nothing).
+    edge_treatment 'fillet' | 'chamfer' (+ edge_treatment_size) on the tabs' ends, or 'none'.
+    Proof, measured: the tab body gains count x length x thickness x height of volume, the slot body loses at
+    least that, and planar faces stand at the expected distances along the edge (tabs and slots).
+    Returns {feature, features[], tab_body, slot_body, tabs[{from, to}], edge_start, edge_end, before, after,
+    tab_volume_added, slot_volume_removed, problems[], verified}. Bumps state_version. Errors: MISSING_PARAMETER,
+    INVALID_PARAMETER, EDGE_NOT_FOUND, FACE_NOT_FOUND, TAB_FACE_NOT_FOUND, TAB_SLOT_FAILED."""
+    params: dict = {"tab_length": tab_length, "count": count, "start_offset": start_offset, "end_offset": end_offset,
+                    "slot_clearance": slot_clearance, "edge_treatment": edge_treatment, "edge_treatment_size": edge_treatment_size}
+    for key, val in (("edge", edge), ("slot_face", slot_face), ("tab_face", tab_face), ("tab_thickness", tab_thickness), ("tab_height", tab_height)):
+        if val is not None:
+            params[key] = val
+    for key, val in (("edge_point", edge_point), ("slot_face_point", slot_face_point), ("tab_face_point", tab_face_point)):
+        if val.strip():
+            params[key] = json.loads(val) if val.strip().startswith("[") else val
+    return _call("sheet_metal_tab_slot", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: move_face
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def move_face(
+    faces: str = "",
+    points: str = "",
+    move_type: Literal["offset", "translate", "rotate"] = "offset",
+    distance: float = 0.0,
+    reverse: bool = False,
+    translation: str = "",
+    rotation: str = "",
+) -> str:
+    """MOVE FACE: move, offset or rotate faces of a body in ONE feature (the stepped corner tops of the closed-corner
+    chassis: Closed Corner -> Move Face -> Corner-Trim). Lengths METERS, angles DEGREES.
+    faces = '[i, j, ...]' (indices from analyze_model(faces)) and / or points = '[[x,y,z], ...]' (meters, ON the faces).
+    move_type 'offset' (default): every face moves by `distance` (> 0) along its normal; reverse=True moves it the
+        other way (a free end shrinks); several faces in one call make one feature.
+    move_type 'translate': translation = '[dx,dy,dz]' (meters): the displacement vector of the faces.
+    move_type 'rotate': rotation = '{"axis_point":[x,y,z],"axis_direction":[x,y,z],"angle":degrees}'.
+    The offset distance is the dimension 'D1@Move Face<n>' (returned in dimensions): an equation can drive it, e.g.
+    equations(links='{"D1@Move Face1":"SheetThickness"}'). The definition is read back from the created feature
+    (move type, distance, direction flag, face count) and compared with the request; the volume change is measured.
+    Returns {feature, move_type, faces, reverse, distance, definition{}, dimensions[], body_before, body_after,
+    volume_change, problems[], verified}. Bumps state_version. Errors: MISSING_PARAMETER, INVALID_PARAMETER,
+    FACE_NOT_FOUND, SELECTION_FAILED, MOVE_FACE_FAILED."""
+    params: dict = {"move_type": move_type, "reverse": reverse}
+    if faces.strip():
+        params["faces"] = json.loads(faces) if faces.strip().startswith("[") else faces
+    if points.strip():
+        params["points"] = json.loads(points) if points.strip().startswith("[") else points
+    if distance:
+        params["distance"] = distance
+    if translation.strip():
+        params["translation"] = json.loads(translation) if translation.strip().startswith("[") else translation
+    if rotation.strip():
+        params["rotation"] = json.loads(rotation) if rotation.strip().startswith("{") else rotation
+    return _call("move_face", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_swept_flange
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_swept_flange(
+    profile_sketch: str,
+    path_sketch: str,
+    thickness: float,
+    bend_radius: Optional[float] = None,
+    reverse: bool = False,
+    start_offset: float = 0.0,
+    end_offset: float = 0.0,
+    trim_side_bends: Optional[bool] = None,
+) -> str:
+    """SWEPT FLANGE: sheet metal made by sweeping an open profile along a path (a bracket, a channel, a flared rim).
+    It is the FIRST feature of an empty part (it creates the Sheet-Metal feature itself from thickness and radius).
+    Lengths METERS.
+    profile_sketch = the name of the profile sketch: an OPEN chain at the START of the path, on a plane perpendicular
+        to it (e.g. path on the Top Plane along x from the origin, profile on the Right Plane at the origin). MEASURED
+        to build: an L, a U, a Z, a single line.
+    path_sketch = the name of the path sketch: a straight line, a path with a corner (mitred), an arc.
+    thickness = REQUIRED; bend_radius = the INSIDE radius (default the thickness).
+    reverse=False (default): the profile line is the OUTER face of the bends (the material lies inside the corner);
+        reverse=True puts the material on the other side (the profile is then the inner face).
+    start_offset / end_offset shorten the flange at the two ends of the path.
+    trim_side_bends is passed on when given (no effect measured on a first feature).
+    For a profile of straight segments along ONE straight path the part is checked against the closed forms:
+    cross-section = t [sum L - sum 2s + sum theta (r + t/2)], developed profile = sum L - sum 2s + sum theta (r + K t),
+    s = (r + t) tan(theta/2) where a bend turns toward the material and r tan(theta/2) where it turns away; volume =
+    cross-section x path and blank = developed profile x path (other shapes: reported in checks_skipped).
+    Returns {feature, new_features[], body_after, bodies, sheet_thickness, volume_added, flat_size, bends, blank[],
+    expected_volume, expected_developed_profile, expected_blank[], material_side, checks_skipped[], problems[],
+    verified}. Bumps state_version. Errors: MISSING_PARAMETER, INVALID_PARAMETER, SKETCH_NOT_FOUND, SWEPT_FLANGE_FAILED."""
+    params: dict = {"profile_sketch": profile_sketch, "path_sketch": path_sketch, "thickness": thickness, "reverse": reverse,
+                    "start_offset": start_offset, "end_offset": end_offset}
+    if bend_radius is not None:
+        params["bend_radius"] = bend_radius
+    if trim_side_bends is not None:
+        params["trim_side_bends"] = trim_side_bends
+    return _call("sheet_metal_swept_flange", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sheet_metal_forming_tool
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sheet_metal_forming_tool(
+    tool: str = "",
+    point: str = "",
+    face: Optional[int] = None,
+    rotation: float = 0.0,
+    configuration: str = "",
+    action: Literal["place", "list"] = "place",
+    filter_text: str = "",
+) -> str:
+    """FORMING TOOL: place a tool of the design library (louver, lance, emboss, extruded flange, rib ...) on a face of
+    a sheet-metal part. Lengths METERS, angles DEGREES.
+    action='list': the library's tools {folders[], count, tools[{name, category, relative_path, path}]}; filter_text =
+        text the relative path must contain (e.g. 'lance').
+    action='place' (default): tool = a bare name ('louver'), a path relative to the forming tools folder
+        ('louvers/louver') or the full path of a .sldftp; point = '[x,y,z]' (meters) ON the face = the PLACEMENT of
+        the tool (the face is found by it) and / or face = an index from analyze_model(faces) (alone, the tool goes
+        to a point of that face); rotation = degrees, counter-clockwise looking at the face from outside the part;
+        configuration = a configuration of the tool file (default: the tool's own).
+    MEASURED: the tool forms the sheet AWAY from the face it is placed on (place it on the other face of the sheet to
+    form the other way; SolidWorks ignores 'flip', so it is not offered); a flat sheet face is needed (a bend or the
+    edge of the sheet is refused); the result is checked and the feature TAKEN OUT AGAIN (the part is as it was) when
+    it reports a rebuild error, when the configuration does not exist (SolidWorks would silently use 'Default'), when
+    it changed nothing, or when its footprint sticks out past the sheet's edge (SolidWorks would extend the sheet).
+    Returns {feature, feature_type, tool, tool_path, configuration, rotation, point, pick_point, face_normal,
+    pushes_toward, volume_before, volume_after, volume_change, centre_of_mass_before, centre_of_mass_after, body_before, body_after,
+    feature_faces, pick_to_footprint, overhang_checked, problems[], verified}. 'place' bumps state_version. Errors:
+    MISSING_PARAMETER, INVALID_PARAMETER, FORMING_TOOL_NOT_FOUND, FACE_NOT_FOUND, NOT_SHEET_METAL, SELECTION_FAILED,
+    FORMING_TOOL_FAILED, CONFIGURATION_NOT_FOUND, FORMING_TOOL_OVERHANG."""
+    params: dict = {"action": action}
+    if action == "list":
+        if filter_text.strip():
+            params["filter_text"] = filter_text.strip()
+        return _call("sheet_metal_forming_tool", params)
+    params["rotation"] = rotation
+    if tool.strip():
+        params["tool"] = tool.strip()
+    if point.strip():
+        params["point"] = json.loads(point) if point.strip().startswith("[") else point
+    if face is not None:
+        params["face"] = face
+    if configuration.strip():
+        params["configuration"] = configuration.strip()
+    return _call("sheet_metal_forming_tool", params)
 
 
 # ---------------------------------------------------------------------------

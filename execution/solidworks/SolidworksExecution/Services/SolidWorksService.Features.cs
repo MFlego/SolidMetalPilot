@@ -71,6 +71,7 @@ namespace SolidworksExecution.Services
                 // (needed e.g. for a cut sketched on a part FACE, where "into the body" is the opposite
                 // side from a cut sketched on a boundary plane). through = through-all (depth ignored).
                 bool reverse = p?.Value<bool?>("reverse") ?? false;
+                bool mergeResult = p?.Value<bool?>("merge") ?? true;      // false: a boss that touches or overlaps existing bodies stays a body of its own (multi-body parts: tab and slot, lids, accessories)
                 int endCond = upToSurface
                     ? (int)swEndConditions_e.swEndCondUpToSurface
                     : midPlane
@@ -303,7 +304,7 @@ namespace SolidworksExecution.Services
                         false, false, false, false,
                         0, 0,
                         false, false, false, false,
-                        true, true, true,
+                        mergeResult, true, true,
                         (int)swStartConditions_e.swStartSketchPlane, 0,
                         false) as IFeature;
                 }

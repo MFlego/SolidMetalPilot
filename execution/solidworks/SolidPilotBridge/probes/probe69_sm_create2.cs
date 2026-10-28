@@ -254,6 +254,129 @@ public static class Script
             var box = (double[])Body0(doc).GetBodyBox(); L("body box mm: [" + (box[0] * 1000).ToString("0.###") + "," + (box[1] * 1000).ToString("0.###") + "," + (box[2] * 1000).ToString("0.###") + "] .. [" + (box[3] * 1000).ToString("0.###") + "," + (box[4] * 1000).ToString("0.###") + "," + (box[5] * 1000).ToString("0.###") + "]");
             if (f != null) { bool w; L("error " + f.GetErrorCode2(out w) + "  " + DumpDef(f, doc)); }
         }
+        else if (mode == "gusset2")
+        {
+            // the MODERN route: CreateDefinition(swFmSMGusset = 118) -> ISMGussetFeatureData -> CreateFeature. Fixture: the plate + ONE 25 mm flange on the +y edge (sm_fixture.ps1 -Flanges 1).
+            var plateTop = FaceAt(doc, 0.0, 0.0, 0.0); var flangeIn = FaceAt(doc, 0.0, 0.0285, 0.012);
+            L("faces: plate top " + (plateTop != null) + ", flange inner " + (flangeIn != null));
+            Func<string, Action<ISMGussetFeatureData>, bool> tryIt = (label, setup) =>
+            {
+                var before = Keys(doc); ISMGussetFeatureData d = null; Feature f = null; string thrown = null;
+                try
+                {
+                    d = (ISMGussetFeatureData)fm.CreateDefinition(118);
+                    setup(d);
+                    f = fm.CreateFeature(d) as Feature;
+                }
+                catch (Exception e) { thrown = (e.InnerException != null ? e.InnerException : e).Message; }
+                var fresh = Top(doc).Where(x => !before.Contains(x.Name + "|" + x.GetTypeName2())).ToList();
+                L(label + ": returned " + (f == null ? "null" : f.Name) + (thrown != null ? "; THREW " + thrown : "") + "; new: " + (fresh.Count == 0 ? "none" : string.Join(", ", fresh.Select(x => x.Name + "[" + x.GetTypeName2() + "]").ToArray())));
+                foreach (var x in fresh) { bool w; int err = 0; try { err = x.GetErrorCode2(out w); } catch { } L("   " + x.Name + (err != 0 ? " ERROR " + err : " ok") + "  " + DumpDef(x, doc)); }
+                for (int i = fresh.Count - 1; i >= 0; i--) Remove(doc, fresh[i]);
+                doc.EditRebuild3();
+                return fresh.Count > 0;
+            };
+            Action<ISMGussetFeatureData> common = d => { d.GussetThickness = 0.0015; d.GussetType = 0; d.ProfileType = 0; d.ProfileDimensionScheme = 0; d.IndentDepth = 0.004; d.IndentWidth = 0.01; d.ProfileLengthDim = 0.01; d.ProfileHeightDim = 0.01; d.ProfileAngleDim = Math.PI / 4; };
+            tryIt("defaults only (no faces)", d => common(d));
+            tryIt("supporting faces: plate top + flange inner (DispatchWrapper array)", d => { common(d); d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(plateTop), new System.Runtime.InteropServices.DispatchWrapper(flangeIn) }; });
+            tryIt("supporting faces: flange inner + plate top", d => { common(d); d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(flangeIn), new System.Runtime.InteropServices.DispatchWrapper(plateTop) }; });
+            tryIt("supporting faces as Face2[]", d => { common(d); d.SupportingFaces = new object[] { plateTop, flangeIn }; });
+            tryIt("with the bend edge as the reference line", d =>
+            {
+                common(d); d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(plateTop), new System.Runtime.InteropServices.DispatchWrapper(flangeIn) };
+                var edge = EdgeAt(doc, 0.0, 0.0285, 0.0); if (edge != null) d.ReferenceLine = edge;
+            });
+        }
+        else if (mode == "gusset3")
+        {
+            // create ONE gusset by the modern route with the given parameters and LEAVE it (arg: type=0|1, depth=m, width=m, thickness=m, offset=m, useoffset=0|1); report volume, faces and the box
+            var plateTop = FaceAt(doc, 0.0, 0.0, 0.0); var flangeIn = FaceAt(doc, 0.0, 0.0285, 0.012);
+            Func<double> vol = () => { var mp = (MassProperty)doc.Extension.CreateMassProperty(); return mp.Volume; };
+            double v0 = vol(); string size0 = Size(doc);
+            var d = (ISMGussetFeatureData)fm.CreateDefinition(118);
+            d.GussetThickness = N(a, "thickness", 0.0015); d.GussetType = (int)N(a, "type", 0); d.ProfileType = 0; d.ProfileDimensionScheme = (int)N(a, "scheme", 0);
+            d.IndentDepth = N(a, "depth", 0.004); d.IndentWidth = N(a, "width", 0.01); d.UseOffset = N(a, "useoffset", 1) > 0; d.OffsetDistance = N(a, "offset", 0.01);
+            d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(plateTop), new System.Runtime.InteropServices.DispatchWrapper(flangeIn) };
+            var f = fm.CreateFeature(d) as Feature; L("created: " + (f == null ? "null" : f.Name));
+            doc.EditRebuild3(); double v1 = vol(); L("volume " + (v0 * 1e9).ToString("0.###") + " -> " + (v1 * 1e9).ToString("0.###") + " mm3 (+" + ((v1 - v0) * 1e9).ToString("0.###") + ");  " + size0 + " -> " + Size(doc));
+            if (f != null) { bool w; L("error " + f.GetErrorCode2(out w) + "  " + DumpDef(f, doc)); }
+        }
+        else if (mode == "gusset4")
+        {
+            // what does SolidWorks choose for the reference line / point when only the two faces are given? (read before CreateFeature, then after)
+            var plateTop = FaceAt(doc, 0.0, 0.0, 0.0); var flangeIn = FaceAt(doc, 0.0, 0.0285, 0.012);
+            var d = (ISMGussetFeatureData)fm.CreateDefinition(118);
+            d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(plateTop), new System.Runtime.InteropServices.DispatchWrapper(flangeIn) };
+            Func<object, string> what = o =>
+            {
+                if (o == null) return "null"; var v = o as Vertex; if (v != null) { var pt = (double[])v.GetPoint(); return "Vertex (" + (pt[0] * 1000).ToString("0.###") + ", " + (pt[1] * 1000).ToString("0.###") + ", " + (pt[2] * 1000).ToString("0.###") + ") mm"; }
+                var e = o as Edge; if (e != null) { var a0 = (double[])((Vertex)e.GetStartVertex()).GetPoint(); var a1 = (double[])((Vertex)e.GetEndVertex()).GetPoint(); return "Edge (" + (a0[0] * 1000).ToString("0.###") + "," + (a0[1] * 1000).ToString("0.###") + "," + (a0[2] * 1000).ToString("0.###") + ") -> (" + (a1[0] * 1000).ToString("0.###") + "," + (a1[1] * 1000).ToString("0.###") + "," + (a1[2] * 1000).ToString("0.###") + ") mm"; }
+                var rp = o as RefPoint; if (rp != null) { var mpt = (double[])((MathPoint)rp.GetRefPoint()).ArrayData; return "RefPoint (" + (mpt[0] * 1000).ToString("0.###") + ", " + (mpt[1] * 1000).ToString("0.###") + ", " + (mpt[2] * 1000).ToString("0.###") + ") mm"; }
+                return o.GetType().FullName;
+            };
+            L("before CreateFeature: reference line " + what(d.ReferenceLine) + "; reference point " + what(d.ReferencePoint) + "; faces " + (d.SupportingFaces == null ? "null" : ((Array)d.SupportingFaces).Length.ToString()));
+            var f = fm.CreateFeature(d) as Feature; L("created: " + (f == null ? "null" : f.Name));
+            if (f != null)
+            {
+                var d2 = (ISMGussetFeatureData)f.GetDefinition(); bool acc = d2.AccessSelections(doc, null);
+                L("after: reference line " + what(d2.ReferenceLine) + "; reference point " + what(d2.ReferencePoint) + "; offset " + (d2.OffsetDistance * 1000) + " mm useoffset " + d2.UseOffset);
+                if (acc) d2.ReleaseSelectionAccess();
+            }
+        }
+        else if (mode == "gusset5")
+        {
+            // measure the gusset: for several parameter sets create it (fresh faces each time), list the planar faces whose normal runs along x with their boxes (the triangle's two faces), the volume added, then delete it
+            Func<double> vol = () => ((MassProperty)doc.Extension.CreateMassProperty()).Volume;
+            Func<string> xfaces = () =>
+            {
+                var o = new List<string>();
+                foreach (Face2 f in (object[])Body0(doc).GetFaces())
+                {
+                    var sf = (Surface)f.GetSurface(); if (!sf.IsPlane()) continue; var nn = (double[])f.Normal; if (Math.Abs(Math.Abs(nn[0]) - 1) > 1e-6) continue; var bx = (double[])f.GetBox();
+                    if (Math.Abs(bx[0]) > 0.0499) continue;      // the end faces of the part (x = +-50) are not the gusset's
+                    o.Add("x " + (bx[0] * 1000).ToString("0.###") + " y " + (bx[1] * 1000).ToString("0.###") + ".." + (bx[4] * 1000).ToString("0.###") + " z " + (bx[2] * 1000).ToString("0.###") + ".." + (bx[5] * 1000).ToString("0.###") + " area " + (f.GetArea() * 1e6).ToString("0.###"));
+                }
+                return string.Join(" | ", o.ToArray());
+            };
+            L("before: " + xfaces());
+            double[][] sets;
+            if (a.ContainsKey("offsets")) { var os = a["offsets"].Split(','); sets = os.Select(x => new[] { 1.0, 4.0, 10.0, 1.5, double.Parse(x, System.Globalization.CultureInfo.InvariantCulture) }).ToArray(); }
+            else sets = new[] { new[] { 1.0, 4.0, 10.0, 1.5, 20.0 }, new[] { 1.0, 6.0, 12.0, 1.5, 20.0 }, new[] { 1.0, 4.0, 10.0, 1.0, 20.0 }, new[] { 0.0, 4.0, 10.0, 1.5, 20.0 }, new[] { 0.0, 6.0, 12.0, 1.5, 30.0 } };
+            foreach (var st in sets)
+            {
+                var before = Keys(doc); double v0 = vol();
+                var plateTop = FaceAt(doc, 0.0, 0.0, 0.0); var flangeIn = FaceAt(doc, 0.0, 0.0285, 0.012);
+                var d = (ISMGussetFeatureData)fm.CreateDefinition(118); d.GussetType = (int)st[0]; d.IndentDepth = st[1] / 1000; d.IndentWidth = st[2] / 1000; d.GussetThickness = st[3] / 1000; d.OffsetDistance = st[4] / 1000; d.UseOffset = N(a, "useoffset", 1) > 0; d.FlipOffset = N(a, "flipoffset", 0) > 0; d.FlipDimSides = N(a, "flipsides", 0) > 0;
+                if (a.ContainsKey("scheme")) { d.ProfileDimensionScheme = (int)N(a, "scheme", 0); d.ProfileLengthDim = N(a, "plen", 10) / 1000; d.ProfileHeightDim = N(a, "pheight", 6) / 1000; d.UseAngleDimForProfile = N(a, "useangle", 0) > 0; d.ProfileAngleDim = N(a, "pangle", 45) * Math.PI / 180; }
+                if (N(a, "fillets", 0) > 0) { d.FilletGussetEdges = true; d.EdgeFilletRadius = 0.001; d.FilletInnerCorners = true; d.InnerCornerFilletRadius = 0.001; d.FilletOuterCorners = true; d.OuterCornerFilletRadius = 0.001; }
+                if (N(a, "draft", 0) > 0) { d.DraftSideFaces = true; d.DraftAngle = N(a, "draft", 5) * Math.PI / 180; }
+                d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(plateTop), new System.Runtime.InteropServices.DispatchWrapper(flangeIn) };
+                var f = fm.CreateFeature(d) as Feature;
+                if (f == null) { L("type " + st[0] + " depth " + st[1] + " width " + st[2] + " t " + st[3] + " offset " + st[4] + ": null"); continue; }
+                doc.EditRebuild3();
+                L("type " + st[0] + " depth " + st[1] + " width " + st[2] + " t " + st[3] + " offset " + st[4] + ": +" + ((vol() - v0) * 1e9).ToString("0.###") + " mm3; " + Size(doc) + "; faces along x: " + xfaces());
+                Remove(doc, f); doc.EditRebuild3();
+            }
+        }
+        else if (mode == "gusset6")
+        {
+            // the reference point: set a vertex at the OTHER end of the bend as ReferencePoint before CreateFeature (arg refx = x of the vertex in mm, refy = 27, refz = 0), offset in mm
+            double rx = N(a, "refx", 50), ry = N(a, "refy", 27), rz = N(a, "refz", 0), off = N(a, "offset", 10) / 1000;
+            Vertex best = null; double bd = 1e9;
+            foreach (Vertex v in (object[])Body0(doc).GetVertices()) { var pt = (double[])v.GetPoint(); double dd = Math.Sqrt(Math.Pow(pt[0] - rx / 1000, 2) + Math.Pow(pt[1] - ry / 1000, 2) + Math.Pow(pt[2] - rz / 1000, 2)); if (dd < bd) { bd = dd; best = v; } }
+            L("vertex nearest (" + rx + "," + ry + "," + rz + "): " + (best == null ? "none" : "(" + ((double[])best.GetPoint()).Select(x => (x * 1000).ToString("0.###")).Aggregate((x, y) => x + "," + y) + ") dist " + (bd * 1000).ToString("0.###") + " mm"));
+            var plateTop = FaceAt(doc, 0.0, 0.0, 0.0); var flangeIn = FaceAt(doc, 0.0, 0.0285, 0.012);
+            var d = (ISMGussetFeatureData)fm.CreateDefinition(118); d.GussetType = 1; d.IndentDepth = 0.004; d.IndentWidth = 0.01; d.GussetThickness = 0.0015; d.OffsetDistance = off; d.UseOffset = true;
+            d.SupportingFaces = new[] { new System.Runtime.InteropServices.DispatchWrapper(plateTop), new System.Runtime.InteropServices.DispatchWrapper(flangeIn) };
+            string thrown = null; try { d.ReferencePoint = best; } catch (Exception e) { thrown = e.Message; }
+            L("ReferencePoint assigned" + (thrown != null ? " THREW " + thrown : ""));
+            var f = fm.CreateFeature(d) as Feature; L("created: " + (f == null ? "null" : f.Name));
+            if (f != null)
+            {
+                doc.EditRebuild3();
+                foreach (Face2 fc in (object[])Body0(doc).GetFaces()) { var sf = (Surface)fc.GetSurface(); if (!sf.IsPlane()) continue; var nn = (double[])fc.Normal; if (Math.Abs(Math.Abs(nn[0]) - 1) > 1e-6) continue; var bx = (double[])fc.GetBox(); if (Math.Abs(bx[0]) > 0.0499) continue; L("x-face at x " + (bx[0] * 1000).ToString("0.###") + " y " + (bx[1] * 1000).ToString("0.###") + ".." + (bx[4] * 1000).ToString("0.###")); }
+            }
+        }
         else if (mode == "gusset")
         {
             // fixture: the plate + ONE 25 mm flange on the +y edge (sm_fixture.ps1 -Flanges 1). The faces at the bend: the plate's top face (z = 0), the flange's inner face (y = 28.5), the bend's cylinders.

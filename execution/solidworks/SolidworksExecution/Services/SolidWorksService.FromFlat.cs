@@ -342,7 +342,8 @@ namespace SolidworksExecution.Services
             return pts;
         }
 
-        private FlatPlan PlanFlat(JObject p)
+        // `into` (optional) is the plan object to fill: when the plan fails half way the caller keeps what was read (the outline, the bend lines) - the flange recipe starts from it
+        private FlatPlan PlanFlat(JObject p, FlatPlan into = null)
         {
             string path = p.Value<string>("dxf_path");
             if (string.IsNullOrWhiteSpace(path)) throw new ToolFailure("MISSING_PARAMETER", "dxf_path is required: the full path of an ASCII DXF flat pattern.");
@@ -361,7 +362,7 @@ namespace SolidworksExecution.Services
             double btol = Math.Max(tol * 5, 5e-5);                         // a bend line ends ON the outline within this (0.05 mm)
             double poke = p.Value<double?>("reach_tolerance") ?? 5e-5;     // how far a region may reach past the line of a bend that is not its own
             var dxf = new FlatDxf { InsUnits = ins, Measurement = meas }; FlatEntities(raw, scale, dxf);
-            var plan = new FlatPlan { Dxf = path, Units = units, Scale = scale, Seen = dxf.Seen, Skipped = dxf.Skipped };
+            var plan = into ?? new FlatPlan(); plan.Dxf = path; plan.Units = units; plan.Scale = scale; plan.Seen = dxf.Seen; plan.Skipped = dxf.Skipped;
             if (dxf.Skipped.Count > 0) plan.Warnings.Add("ignored entities: " + string.Join(", ", dxf.Skipped.Select(kv => kv.Key + " x" + kv.Value).ToArray()) + " (text, dimensions and the like carry no geometry for the fold)");
             plan.SplinesOrArcs = dxf.Ents.Any(e => e.Kind == "arc" || e.Kind == "spline" || e.Kind == "circle");
 
@@ -608,7 +609,8 @@ namespace SolidworksExecution.Services
                 // the plan needs no SolidWorks and no document: it only reads the DXF
                 try
                 {
-                    var res = PlanJson(PlanFlat(p)); res["plan_only"] = true; res["verified"] = true; int sv = _guard.GetCurrentStateVersion();
+                    MiterRecipe recipe; string route; ToolFailure refusal; var plan = PlanRoute(p, out recipe, out route, out refusal);
+                    var res = route == "miter_flange" ? RecipePlanJson(plan, recipe, refusal) : PlanJson(plan); res["route"] = route; res["plan_only"] = true; res["verified"] = true; int sv = _guard.GetCurrentStateVersion();
                     return new ExecutionResponse { OperationId = request.OperationId, Status = "COMPLETED", Verified = true, StateVersion = sv, CadState = new CadState { StateVersion = sv, ActiveDocument = "", DocumentType = "NONE", Features = new List<string>(), Dimensions = new List<string>() }, ResultGeometry = res };
                 }
                 catch (ToolFailure f) { return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), f.Code, f.Message); }
@@ -685,6 +687,22 @@ namespace SolidworksExecution.Services
                 bool started = TopFeatures(doc).Any(f => !names0.Contains(f.Name));      // nothing built yet (a refusal before the first step): nothing to take out
                 if (!started) throw new ToolFailure(code, msg);
                 int removed = FlatRollback(doc, names0);
+                // strategy auto: SolidWorks refused a sketched bend of a flat the plan thought foldable (a mitre flat with a wide rip gap does that); a mitre-flange box has its flange recipe as a second way
+                if (ours && code == "BUILD_STEP_FAILED" && string.Equals(p.Value<string>("strategy"), "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var p2 = (JObject)p.DeepClone(); p2["strategy"] = "miter_flange";
+                        var res2 = BuildFromFlatSteps(doc, part, p2, names0);
+                        res2["sketched_bends_failure"] = new JObject { ["code"] = code, ["message"] = msg + " [rolled back: " + removed + " features removed]" };
+                        return res2;
+                    }
+                    catch (Exception ex2)
+                    {
+                        int removed2 = TopFeatures(doc).Any(f => !names0.Contains(f.Name)) ? FlatRollback(doc, names0) : 0;
+                        throw new ToolFailure(code, msg + " [rolled back: " + removed + " features removed] The flange recipe was tried next and failed too: " + (ex2 is ToolFailure ? ex2.Message : ex2.GetType().Name + ": " + ex2.Message) + (removed2 > 0 ? " [rolled back: " + removed2 + " features removed]" : "") + " [the part is empty again]");
+                    }
+                }
                 throw new ToolFailure(code, msg + " [rolled back: " + removed + " features removed, the part is empty again; keep_on_failure = true keeps them for a look]");
             }
         }
@@ -695,7 +713,9 @@ namespace SolidworksExecution.Services
             double t = need("thickness"), r = need("bend_radius"); double k = p.Value<double?>("k_factor") ?? 0.5, angle = p.Value<double?>("angle") ?? 90;
             if (k <= 0 || k >= 1) throw new ToolFailure("INVALID_PARAMETER", "k_factor must lie between 0 and 1.");
             if (angle <= 0 || angle >= 180) throw new ToolFailure("INVALID_PARAMETER", "angle must lie between 0 and 180 degrees.");
-            var plan = PlanFlat(p);      // everything that can be wrong with the DXF is refused here, before the first feature
+            MiterRecipe recipe; string route; ToolFailure refusal;
+            var plan = PlanRoute(p, out recipe, out route, out refusal);      // everything that can be wrong with the DXF is refused here, before the first feature
+            if (route == "miter_flange") return BuildMiterRecipe(doc, part, p, names0, plan, recipe, refusal);
             var bodies0 = part.GetBodies2((int)swBodyType_e.swAllBodies, false) as object[];
             if ((bodies0 != null && bodies0.Length > 0) || TopFeatures(doc).Any(f => f.GetTypeName2() == "ProfileFeature")) throw new ToolFailure("NOT_EMPTY_PART", "The active part is not empty: open a new part for the flat (open_new_part).");
             const string plane = "Front Plane";      // the flat is drawn on the Front Plane: the DXF x / y are the plane's x / y, the sheet folds toward +Z / -Z
@@ -726,7 +746,7 @@ namespace SolidworksExecution.Services
             doc.EditRebuild3();
 
             // ---- proof: the part's own flat pattern has the size of the DXF outline, and it has all the bends
-            var problems = new JArray(); var res = new JObject { ["plan"] = PlanJson(plan), ["steps"] = steps, ["thickness"] = t, ["bend_radius"] = r, ["k_factor"] = k, ["angle"] = angle };
+            var problems = new JArray(); var res = new JObject { ["route"] = "sketched_bends", ["plan"] = PlanJson(plan), ["steps"] = steps, ["thickness"] = t, ["bend_radius"] = r, ["k_factor"] = k, ["angle"] = angle };
             var created = TopFeatures(doc).Where(f => !names0.Contains(f.Name) && f.GetTypeName2() != "ProfileFeature").Select(f => f.Name).ToList(); res["features"] = new JArray(created.ToArray());
             foreach (var f in TopFeatures(doc)) { int err = FeatureError(f); if (err != 0 && !names0.Contains(f.Name)) problems.Add("feature " + f.Name + " reports rebuild error " + err); }
             int bendsIn = OneBendFeatures(doc).Count; res["bends"] = bendsIn; res["bends_expected"] = plan.Bends.Count;

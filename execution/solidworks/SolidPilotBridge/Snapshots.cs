@@ -53,6 +53,9 @@ namespace SolidPilot.Bridge
         {
             var doc = sw.ActiveDoc as ModelDoc2; if (doc == null) return LastResult = "no active document";
             if (!force && !doc.GetSaveFlag()) return LastResult = "skipped: " + doc.GetTitle() + " has no unsaved changes";
+            // a SaveAs copy CLOSES the sketch that is being edited: the next sketch call then fails with SKETCH_NOT_ACTIVE (measured 2026-10-27: create_sketch / add_sketch_entity / create_sketch / add_sketch_entity on a
+            // new part - the document only counts as modified once the first sketch is left, so its first snapshot fell in the middle of the second sketch). The copy waits for the next call outside a sketch.
+            if (!force) { try { if (doc.SketchManager.ActiveSketch != null) return LastResult = "skipped: " + doc.GetTitle() + " has a sketch open (a copy would close it)"; } catch (Exception) { } }
             string title = doc.GetTitle(); DateTime last;
             if (!force && LastTaken.TryGetValue(title, out last) && (DateTime.UtcNow - last).TotalSeconds < IntervalSeconds) return LastResult = "skipped: " + title + " was snapshotted " + (int)(DateTime.UtcNow - last).TotalSeconds + " s ago";
             string ext = doc.GetType() == (int)swDocumentTypes_e.swDocASSEMBLY ? ".SLDASM" : doc.GetType() == (int)swDocumentTypes_e.swDocDRAWING ? ".SLDDRW" : ".SLDPRT";

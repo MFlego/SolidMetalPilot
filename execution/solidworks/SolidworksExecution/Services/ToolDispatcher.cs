@@ -65,6 +65,13 @@ namespace SolidworksExecution.Services
                 case "surface_extrude":        return service.SurfaceExtrude(request);
                 case "surface_cut":            return service.SurfaceCut(request);
                 case "sheet_metal_from_flat":  return service.SheetMetalFromFlat(request);
+                case "sheet_metal_gusset":     return service.SheetMetalGusset(request);
+                case "sheet_metal_jog":        return service.SheetMetalJog(request);
+                case "sheet_metal_lofted_bend": return service.SheetMetalLoftedBend(request);
+                case "sheet_metal_tab_slot":   return service.SheetMetalTabSlot(request);
+                case "move_face":              return service.MoveFace(request);
+                case "sheet_metal_swept_flange": return service.SheetMetalSweptFlange(request);
+                case "sheet_metal_forming_tool": return service.SheetMetalFormingTool(request);
                 default:                       return null;
             }
         }
