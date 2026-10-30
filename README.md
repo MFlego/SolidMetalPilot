@@ -444,6 +444,8 @@ The drawing tools were added after the initial part-modeling set and are now a s
   adapter (Python dependencies are installed via `requirements.txt`).
 - An MCP-capable AI client (e.g. Claude Desktop; OpenClaw, OpenAI-based agents, and local LLMs are also targeted).
 
+Build output (`bin/`, `obj/`) is not committed: build from source as described below. The SolidWorks interop assemblies are referenced from your own SolidWorks installation (`api\redist`), never copied into the repository. Prebuilt binaries will be attached to GitHub releases once the project publishes them.
+
 ### Execution layer: the SolidPilot Bridge add-in (default)
 
 The tools run inside SolidWorks. Set it up once:

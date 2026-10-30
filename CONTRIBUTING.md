@@ -71,7 +71,7 @@ Get-Process SolidworksExecution -ErrorAction SilentlyContinue | Stop-Process -Fo
 Start-Process execution\solidworks\SolidworksExecution\bin\Debug\SolidworksExecution.exe -WindowStyle Hidden
 ```
 
-The exe runs headless and must be running while SolidWorks is open (the COM connection is established lazily, on the first tool call), and the adapter must be started with `EXECUTION_MODE=exe`. C#-side errors and per-request traces are written to `execution\solidworks\SolidworksExecution\bin\Debug\execution.log`. Never commit the Debug binaries a local build modifies under `SolidworksExecution/bin/Debug`.
+The exe runs headless and must be running while SolidWorks is open (the COM connection is established lazily, on the first tool call), and the adapter must be started with `EXECUTION_MODE=exe`. C#-side errors and per-request traces are written to `execution\solidworks\SolidworksExecution\bin\Debug\execution.log`. Build output (`bin/`, `obj/`) is not tracked by git, so a local build never shows up in `git status`.
 
 ### Running the adapter
 
