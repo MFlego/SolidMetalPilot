@@ -1,4 +1,4 @@
-// Sheet-metal FORMING features through the typed API (found and proven by probes 40-41, see SolidPilotBridge/SHEETMETAL-FINDINGS.txt): hems, break corners (fillet / chamfer) and the mitre flange.
+// Sheet-metal FORMING features through the typed API (found and proven by probes 40-41): hems, break corners (fillet / chamfer) and the mitre flange.
 // Edges and faces are identified by the stable indices of analyze_model(edges|faces) (or by a point ON them) and are selected as OBJECTS with Select4: SelectByID2(x, y, z) picks through the current view
 // and is not reliable. Lengths are METERS, angles DEGREES at this boundary (like the other tools).
 using System;

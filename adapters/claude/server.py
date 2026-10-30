@@ -1610,6 +1610,10 @@ def sheet_metal_feature(
     gauge_table: str = "",
     gauge: str = "",
     gauge_radius: Optional[float] = None,
+    dimension_type: Literal["outer", "inner", "tangent"] = "outer",
+    edge_indices: str = "",
+    angle_exact: bool = False,
+    gap: Optional[float] = None,
 ) -> str:
     """Create sheet metal features on the active part. Lengths METERS, angles DEGREES.
 
@@ -1631,7 +1635,20 @@ def sheet_metal_feature(
         against, so a wrong side fails downstream and less clearly.
     'edge_flange' — a DEFAULT-profile (full-edge-width) flange on an existing sheet metal edge.
         Select by edge_index (from analyze_model(edges), PREFERRED — a coordinate pick can miss a
-        real edge) or a point ex/ey/ez on it. flange_length · angle (90).
+        real edge) or a point ex/ey/ez on it. flange_length · angle (90) · dimension_type = what the length is
+        measured to: 'outer' (default: the OUTER virtual sharp - the length is the outer dimension, material
+        inside) | 'inner' | 'tangent'. Without it SolidWorks reuses the last choice made in its own UI (measured:
+        a 3.875 in flange stood 3.925 in tall). The result reads the definition back: {feature, length,
+        angle_deg, edges, dimension_type, verified}.
+        ONE FEATURE FOR EVERY SET OF FLANGES WITH EQUAL PARAMETERS: edge_indices = a JSON array of edge
+        indices ('[12,15,18,21]') makes ONE multi-edge Edge Flange (one length / angle / radius; flanges on
+        adjacent edges meet in a tight corner: `gap` (default 0.0000762 m = 0.003 in) between them; flanges whose
+        edges run round a bend get 45 degree mitre faces, edges of one plate get trimmed butt corners - for a
+        true mitre of a plate corner use sheet_metal_miter_flange). Never one feature per edge (user rule, Phase 7
+        post-mortem).
+        HARD DEFAULT 90 DEGREES: an angle within 5 degrees of 90 is snapped to exactly 90 (the reply carries
+        angle_note) - set angle_exact=True only when the USER stated that angle; never use an angle read off
+        a picture.
     'edge_flange_sketch' + 'edge_flange_finish' — the CUSTOM-profile flange, in two calls. The
         sketch call takes the attach edge (edge_index preferred, else ex/ey/ez), generates the
         edge-linked profile sketch (the API accepts ONLY a sketch it generated), clears it
@@ -1673,6 +1690,12 @@ def sheet_metal_feature(
         params["fixed_face_index"] = fixed_face_index
     if edge_index >= 0:
         params["edge_index"] = edge_index
+    if edge_indices:
+        params["edge_indices"] = json.loads(edge_indices) if isinstance(edge_indices, str) else edge_indices
+    if angle_exact:
+        params["angle_exact"] = True
+    if gap is not None:
+        params["gap"] = gap
     if sketch_name:
         params["sketch_name"] = sketch_name
     if gauge_table:
@@ -1680,6 +1703,8 @@ def sheet_metal_feature(
         params["gauge"] = gauge
         if gauge_radius is not None:
             params["gauge_radius"] = gauge_radius
+    if feature_type in ("edge_flange", "edge_flange_finish"):
+        params["dimension_type"] = dimension_type
     return _call("sheet_metal_feature", params)
 
 
@@ -1747,6 +1772,7 @@ def sheet_metal_params(
     thickness: Optional[float] = None,
     bend_radius: Optional[float] = None,
     reset_overrides: str = "",
+    feature: str = "",
 ) -> str:
     """Read or set the sheet-metal parameters of the ACTIVE part with the call sequences that really take
     effect. Lengths METERS. (The plain Sheet-Metal property writes are silently ignored until the override
@@ -1771,8 +1797,14 @@ def sheet_metal_params(
         reset_overrides = 'bend_allowance,auto_relief' (also bend_parameters) -> back to the document /
             material defaults. Switching bend_allowance off deletes D2@Sheet-Metal1.
     A PER-BEND K-factor override lives on the bend (feature_data on 'EdgeBend1'), not here.
-    Errors: NOT_SHEET_METAL, WRONG_DOCUMENT_TYPE, MODIFY_FAILED, INVALID_PARAMETER."""
+    SEVERAL SHEET-METAL BODIES (a part with several base flanges): each body has its OWN Sheet-Metal feature
+        (Sheet-Metal1, Sheet-Metal13 ...) with its own K-factor / thickness / radius (a second body starts at the
+        template's K 0.5). `feature` = the Sheet-Metal feature to read / set (default: the first); a 'get' lists
+        them all in sheet_metal_features[{feature, thickness, bend_radius, k_factor}] when there are several.
+    Errors: NOT_SHEET_METAL, WRONG_DOCUMENT_TYPE, FEATURE_NOT_FOUND, MODIFY_FAILED, INVALID_PARAMETER."""
     params: dict = {"action": action}
+    if feature:
+        params["feature"] = feature
     if k_factor is not None:
         params["k_factor"] = k_factor
     if bend_allowance_type:
@@ -1839,6 +1871,7 @@ def flat_pattern_control(
     dxf_path: str = "",
     dxf_flags: int = 5,
     leave_flat: bool = False,
+    feature: str = "",
 ) -> str:
     """Control the flat pattern of the ACTIVE sheet-metal part and read the flat blank.
     Unsuppresses the Flat-Pattern feature, applies the options you give (None = leave as is), measures, exports
@@ -1848,10 +1881,18 @@ def flat_pattern_control(
     dxf_path: writes the flat DXF directly and non-interactively (ExportToDWG2; the Save-As route blocks the
         SolidWorks UI - never use it). The part must be SAVED first (save_document) or SAVE_REQUIRED is
         returned. dxf_flags: 1 = outline, 5 = outline + bend lines (default).
+    SEVERAL SHEET-METAL BODIES: each body has its own Flat-Pattern feature (Flat-Pattern1, Flat-Pattern13 ...);
+        `feature` picks the one to unfold / measure (default the first); `flat_patterns` lists them all, and
+        `folded` / `flat` carry `bodies` [{name, size, faces}] when there are several bodies (the first body's size
+        / faces / edges stay at the top level). dxf_path then writes ONE DXF PER BODY, named
+        "<Flat-Pattern feature> - <dxf_path's stem>.dxf" in the same folder (dxf.files lists them; measured: a
+        single-file export writes only the FIRST body's flat, whichever flat pattern is active).
     Returns folded and flat body sizes in METERS [x, y, z] with face / edge counts - compare the flat blank with
     your closed-form blank math - the options as they read back, and the DXF size. Bumps state_version.
-    Errors: NOT_SHEET_METAL, FLAT_PATTERN_ERROR, SAVE_REQUIRED, MODIFY_FAILED."""
+    Errors: NOT_SHEET_METAL, FLAT_PATTERN_ERROR, FEATURE_NOT_FOUND, SAVE_REQUIRED, MODIFY_FAILED."""
     params: dict = {"dxf_flags": dxf_flags, "leave_flat": leave_flat}
+    if feature:
+        params["feature"] = feature
     for key, val in (("corner_treatment", corner_treatment), ("simplify_bends", simplify_bends),
                      ("merge_faces", merge_faces), ("show_slit_in_corner_relief", show_slit_in_corner_relief)):
         if val is not None:
@@ -2154,9 +2195,15 @@ def sketch_center_rectangle(
     width: float,
     height: float,
     plane: str = "Front Plane",
+    center_x: float = 0.0,
+    center_y: float = 0.0,
 ) -> str:
     """The resilient MASTER SKETCH: a rectangle centred on the origin of `plane`, FULLY DEFINED - two dimensions
     (D1 = width along the sketch's X, D2 = height along Y, METERS) and the centre tied to the origin - in one call.
+    `center_x` / `center_y` (METERS, default 0) put the centre OFF the origin (a body that sits beside another one,
+    e.g. a base 0.04 in off-centre under a cover): the centre is then tied to the origin by one more driving
+    dimension per non-zero offset (the next free D number: the X offset first, then the Y offset; measured from the
+    origin to the centre; an offset of 0 is a vertical / horizontal relation), still FULLY DEFINED.
     The sketch is left ACTIVE (like create_sketch), so the next feature (sheet_metal_feature base_flange, an
     extrude ...) consumes it. Link D1 / D2 to equation variables later: equations(links='{"D1@Sketch1":
     "BoxWidth","D2@Sketch1":"BoxHeight"}').
@@ -2165,7 +2212,60 @@ def sketch_center_rectangle(
     request. Sketch inference is switched off while it draws, so the corners cannot snap to model edges nearby. The
     plane is selected by NAME, so it does not depend on the view. Errors: SKETCH_ALREADY_ACTIVE, PLANE_NOT_FOUND.
     Bumps state_version."""
-    return _call("sketch_center_rectangle", {"width": width, "height": height, "plane": plane})
+    params = {"width": width, "height": height, "plane": plane}
+    if center_x:
+        params["center_x"] = center_x
+    if center_y:
+        params["center_y"] = center_y
+    return _call("sketch_center_rectangle", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sketch_fully_define
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sketch_fully_define(sketch: str = "") -> str:
+    """FULLY DEFINE a sketch - the user's rule is that EVERY sketch is fully defined, even a random hole sketch. Call it
+    right after the sketch's entities (create_sketch + add_sketch_entities) and before the feature that uses the sketch;
+    `sketch` = the name of an earlier sketch to open and define (default: the ACTIVE sketch). The sketch stays active.
+    Every arc / circle centre and every vertex gets a horizontal and a vertical dimension to the sketch ORIGIN (a point
+    that lies ON an axis gets a relation to the origin instead), every circle its diameter, every arc its radius. A
+    dimension SolidWorks makes driven (redundant) is deleted again and a relation that would over-define is undone, so
+    the sketch ends at constrained_status 3. (ISketchManager.FullyDefineSketch stops half way, measured, hence the
+    tool.) Splines / ellipses are reported in `problems` (their points are not dimensioned).
+    Returns {sketch, status_before, constrained_status, constrained, dimensions[{name, value}], relations[],
+    redundant_dimensions_removed, problems, verified}; verified = fully defined. Errors: NO_ACTIVE_SKETCH,
+    SKETCH_NOT_FOUND, SKETCH_ALREADY_ACTIVE (another sketch is active). The graph door does it for you:
+    `fully_define_sketches: true` on the graph (or `fully_define: true` on a sketch / hole node). Bumps state_version."""
+    params = {}
+    if sketch:
+        params["sketch"] = sketch
+    return _call("sketch_fully_define", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: sketch_convert_entities
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sketch_convert_entities(edges: str = "", points: str = "", chain: bool = False) -> str:
+    """CONVERT ENTITIES: make the ACTIVE sketch's geometry from edges of the MASTER body, so that the master shape
+    DRIVES the profile instead of a retyped rectangle (the user's rule: master sketches and the primary driving
+    dimensions come from the surface construction - the LOD <= 100 base shape of the gate). Order: master solid /
+    surface body (fully defined, origin-centred) -> create_sketch on the plane the base flange belongs on ->
+    sketch_convert_entities(edges=...) -> sheet_metal_feature(base_flange). A later change of the master's
+    dimensions then moves the profile.
+    points = '[[x,y,z],...]', a point ON each straight master edge (meters) - found on solid AND surface bodies, so it
+    is the form for a surface master (analyze_model(edges) lists solid bodies only); edges = a JSON array of edge
+    indices from analyze_model(edges), e.g. '[8,9,10,11]' (solid bodies); chain=True also converts tangent-connected
+    edges (default False: exactly the edges you list). Needs an ACTIVE sketch (NO_ACTIVE_SKETCH). Returns {sketch, edges,
+    created_segments, size:[w,h], constrained_status, constrained, problems, verified}: the converted geometry is
+    defined by the master, so the sketch reads fully defined (3) when nothing else is in it. Bumps state_version."""
+    params = {"chain": chain}
+    if edges:
+        params["edges"] = json.loads(edges) if isinstance(edges, str) else edges
+    if points:
+        params["points"] = json.loads(points) if isinstance(points, str) else points
+    return _call("sketch_convert_entities", params)
 
 
 # ---------------------------------------------------------------------------

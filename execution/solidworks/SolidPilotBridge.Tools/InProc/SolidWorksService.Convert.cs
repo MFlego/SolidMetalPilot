@@ -1,5 +1,5 @@
 // sheet_metal_convert - Convert to Sheet Metal, driven from inside SolidWorks. The API cannot do this: CreateFeature on a Convert definition returns null, InsertConvertToSheetMetal2 half-builds on a
-// surface body, a different bend list cannot be written into an existing feature and API selections never reach the PropertyManager's lists (probes 04, 06, 15, 19-21; DESIGN-NOTES P4, P13-P15).
+// surface body, a different bend list cannot be written into an existing feature and API selections never reach the PropertyManager's lists (probes 04, 06, 15, 19-21).
 // What does work is what a user does: preselect the fixed face, start the command, fill the lists with genuine picks, press OK. This tool does exactly that, in ONE gate call:
 //   * everything is resolved BEFORE the first UI action (fixed face, bend edges, rip sketches, settings), so a bad request fails with nothing opened;
 //   * the PropertyManager is a WPF control in this very process (see PmUi): its lists, numeric boxes, check boxes and buttons are driven through their automation peers;

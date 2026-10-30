@@ -89,6 +89,7 @@ def compile_and_run(port, graph, capture=False):
         rec = {"id": nid, "type": ntype, "status": "PENDING", "ops": []}
         try:
             ops = _plan_node(port, node, sv, node_features)  # may do a live (read-only) resolve
+            ops = _with_fully_defined_sketch(ops, node, graph)
             last_resp = None
             frame_fn = None  # 2D coord transform for this node's entities (sketch frame fix)
             frame_mirror = False
@@ -194,11 +195,34 @@ def compile_and_run(port, graph, capture=False):
     return result
 
 
+def _with_fully_defined_sketch(ops, node, graph):
+    """EVERY sketch fully defined (user rule, Phase 7 post-mortem: 'even random hole features'): when the node
+    (`fully_define`) or the graph (`fully_define_sketches`) asks for it, a `sketch` node gets one
+    sketch_fully_define op after its entities and a `hole` node gets it right before its cut. Strict: a sketch
+    that stays under-defined stops the node. Default OFF (a replay of an analysed part keeps the original's
+    sketches as they are); a node-level value overrides the graph's."""
+    if node.get("type") not in ("sketch", "hole"):
+        return ops
+    want = node.get("fully_define")
+    if want is None:
+        want = graph.get("fully_define_sketches") is True
+    if not want:
+        return ops
+    fd = lowering.Op("sketch_fully_define", {}, "fully define the sketch (every sketch fully defined)", True)
+    if node["type"] == "hole":
+        return list(ops[:-1]) + [fd] + [ops[-1]]
+    return list(ops) + [fd]
+
+
 def _plan_node(port, node, state_version, node_features):
     ntype = node["type"]
     if ntype == "box":
         return lowering.lower_box(node)
     if ntype == "sketch":
+        # master-driven sketch (`from_edges`): the master is usually a SURFACE and analyze_model(edges) lists solid
+        # bodies only, so the anchors go through as POINTS ON the edges (the tool finds the edge on solid or surface
+        # bodies by geometry and selects it as an object)
+        convert_indices = [list(a["near"]) for a in node["from_edges"]] if node.get("from_edges") else None
         ref = node.get("ref") or {}
         face_ref = ref.get("face")
         if face_ref is not None:
@@ -207,7 +231,7 @@ def _plan_node(port, node, state_version, node_features):
             # the datum/offset path this MUST resolve (there is no plane to fall back to).
             face_index, _info = resolve_face_by_anchor(port, state_version, face_ref["near"],
                                                        node_id=node.get("id"))
-            return lowering.lower_sketch(node, face_index=face_index)
+            return lowering.lower_sketch(node, face_index=face_index, convert_indices=convert_indices)
         offset = float(ref.get("offset") or 0.0)
         face_index = None
         if offset != 0.0:
@@ -216,7 +240,7 @@ def _plan_node(port, node, state_version, node_features):
             face_index = resolve_face_on_plane(port, state_version,
                                                ref.get("datum", "top"), offset,
                                                node_id=node.get("id"))
-        return lowering.lower_sketch(node, face_index=face_index)
+        return lowering.lower_sketch(node, face_index=face_index, convert_indices=convert_indices)
     if ntype == "extrude":
         if node.get("end") == "up_to_surface":
             near = ((node.get("up_to") or {}).get("face") or {}).get("near")
@@ -260,9 +284,11 @@ def _plan_node(port, node, state_version, node_features):
         # The attach edge resolves BY INDEX (fillet/chamfer's anchor resolver) — the coordinate
         # pick misses real edges (KNOWN-LIMITATIONS #6; live on 4-1: EF2's slanted edge existed
         # EXACTLY at the pick point yet SelectByID2 returned nothing).
-        edge_indices, _info = resolve_edges_by_anchor(port, state_version, [node["edge"]],
+        # `edges` = ONE multi-edge flange (all the edges that share the parameters are one feature).
+        anchors = list(node["edges"]) if node.get("edges") else [node["edge"]]
+        edge_indices, _info = resolve_edges_by_anchor(port, state_version, anchors,
                                                       node_id=node.get("id"))
-        return lowering.lower_edge_flange(node, edge_indices[0])
+        return lowering.lower_edge_flange(node, edge_indices if len(edge_indices) > 1 else edge_indices[0])
     if ntype == "mirror":
         # Like loft's profiles: the mirrored features ran earlier, so their runtime names are
         # already in node_features. Resolve now; the tool selects by name (localization-proof).

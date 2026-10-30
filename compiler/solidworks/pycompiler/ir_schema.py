@@ -114,6 +114,10 @@ def validate(graph):
             errors.append("graph.material is PART-only — set_part_material requires a part "
                           "document, not an assembly.")
 
+    # Graph-level fully_define_sketches (user rule, Phase 7 post-mortem: EVERY sketch fully defined, even hole sketches): a boolean; the sketch / hole nodes may override it (`fully_define`).
+    if graph.get("fully_define_sketches") is not None and not isinstance(graph.get("fully_define_sketches"), bool):
+        errors.append("graph.fully_define_sketches must be a boolean when present.")
+
     seen = {}  # id -> type (in declaration order)
     seen_mate = False
     for pos, node in enumerate(nodes):
@@ -147,8 +151,20 @@ def validate(graph):
 
         elif ntype == "sketch":
             _check_datum(node, label, errors)
+            if node.get("fully_define") is not None and not isinstance(node.get("fully_define"), bool):
+                errors.append("%s: 'fully_define' must be a boolean." % label)
             profile = node.get("profile")
-            if not isinstance(profile, list) or len(profile) == 0:
+            # MASTER-DRIVEN sketch (user rule: master sketches come from the surface construction): `from_edges` =
+            # anchors of the master body's edges to CONVERT into the sketch; then `profile` is optional
+            from_edges = node.get("from_edges")
+            if from_edges is not None:
+                if (not isinstance(from_edges, list) or len(from_edges) == 0
+                        or not all(isinstance(a, dict) and _is_point3(a.get("near")) for a in from_edges)):
+                    errors.append("%s: 'from_edges' must be a non-empty array of anchors {near:[x,y,z], hint?} — "
+                                  "a 3D point ON each master edge to convert into the sketch." % label)
+            if from_edges is not None and profile is None:
+                pass
+            elif not isinstance(profile, list) or len(profile) == 0:
                 errors.append("%s: 'profile' must be a non-empty array of primitives." % label)
             else:
                 for j, prim in enumerate(profile):
@@ -180,6 +196,8 @@ def validate(graph):
             _check_extrude_end(node, op, label, errors)
 
         elif ntype == "hole":
+            if node.get("fully_define") is not None and not isinstance(node.get("fully_define"), bool):
+                errors.append("%s: 'fully_define' must be a boolean." % label)
             ref = node.get("ref") or {}
             nf = ref.get("node_face") or {}
             tgt = nf.get("node")
@@ -427,9 +445,24 @@ def validate(graph):
             # full-edge-width flange (the forward mode: a forward AI cannot know the generated
             # sketch's frame). The pair and `length` are mutually exclusive.
             edge = node.get("edge")
-            if not isinstance(edge, dict) or not _is_point3(edge.get("near")):
+            edges = node.get("edges")
+            if edges is not None:
+                # MULTI-EDGE (user rule, Phase 7 post-mortem: flanges that share parameters are ONE feature)
+                if edge is not None:
+                    errors.append("%s: 'edge' and 'edges' are mutually exclusive." % label)
+                if (not isinstance(edges, list) or len(edges) < 2
+                        or not all(isinstance(a, dict) and _is_point3(a.get("near")) for a in edges)):
+                    errors.append("%s: 'edges' must be an array of >= 2 anchors {near:[x,y,z], hint?} — "
+                                  "a 3D point ON each attach edge (use 'edge' for a single one)." % label)
+                if node.get("length") is None:
+                    errors.append("%s: 'edges' (one multi-edge flange) needs 'length' (simple mode)." % label)
+            elif not isinstance(edge, dict) or not _is_point3(edge.get("near")):
                 errors.append("%s: 'edge' must be {near:[x,y,z], hint?} — a 3D point ON the attach "
                               "edge (the reader's edge `mid`)." % label)
+            if node.get("angle_exact") is not None and not isinstance(node.get("angle_exact"), bool):
+                errors.append("%s: 'angle_exact' must be a boolean." % label)
+            if node.get("gap") is not None and not _is_pos_number(node.get("gap")):
+                errors.append("%s: 'gap' must be a positive number (meters)." % label)
             angle = node.get("angle")
             if angle is not None and not _is_pos_number(angle):
                 errors.append("%s: 'angle' must be a positive number (RADIANS; omit for 90°)." % label)

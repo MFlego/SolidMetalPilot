@@ -59,6 +59,8 @@ namespace SolidworksExecution.Services
                 case "document_units":         return service.DocumentUnits(request);
                 case "equations":              return service.Equations(request);
                 case "sketch_center_rectangle": return service.SketchCenterRectangle(request);
+                case "sketch_fully_define":    return service.SketchFullyDefine(request);
+                case "sketch_convert_entities": return service.SketchConvertEntities(request);
                 case "delete_face":            return service.DeleteFace(request);
                 case "offset_surface":         return service.OffsetSurface(request);
                 case "sheet_metal_fold":       return service.SheetMetalFold(request);

@@ -4,14 +4,14 @@ numbers, faces, refusals - not just COMPLETED. The graphs are the ones a planner
 tool-level suites (features-tests.ps1, forming-tests.ps1, flat-edit-tests.ps1, convert-tests.ps1), so a node that lowers wrongly shows up as a
 number that is not the tool's own.
 
-What it proves, test by test (I00 .. I23):
+What it proves, test by test (I00 .. I25):
   the door as a model uses it (the MCP function, a JSON string) · a forming tool and a louver ARRAY (a pattern seeded on a typed tool's feature) ·
   a forming tool that would overhang is REFUSED and the part is untouched · a gauge-table sheet · hem · break corner · gusset · two gussets ·
   jog · mitre flange (a straight wall and a rim + lip) · closed corners · lofted bend · swept flange · tab and slot (two bodies) · move face ·
   unfold -> a radius per fillet edge -> fold · unfold -> surface extrude -> surface cut -> fold · sheet-metal settings + flat-pattern options ·
   Convert to Sheet Metal as a graph (needs SolidWorks ON SCREEN: reported SKIPPED when another window covers the graphics area) · fold from a flat DXF ·
   corner relief on a four-wall tray (circular and obround, a refused 2.9 mm circle, a three-bend relief outside the vocabulary) · surface preparation
-  (delete face -> offset surface, inward and outward).
+  (delete face -> offset surface, inward and outward) · the user's DFM rules as a graph (fully defined sketches, ONE multi-edge flange, the hard 90 degree default) · a master-driven sketch (`from_edges`).
 
 Needs SolidWorks running with the SolidPilot Bridge (shell >= 0.9, tools loaded) and NOTHING else open: every test closes all documents and
 builds its own part. Run with a Python that has the adapter's requirements (mcp, httpx):
@@ -212,7 +212,8 @@ PLATE = [sk("s1", "front", [rect(0.1, 0.06)]),
          {"id": "n2", "type": "sheet_metal", "sketch": "s1", "thickness": 0.0015, "bend_radius": 0.0015, "k_factor": 0.5}]       # 100 x 60 x 1.5, z -1.5 .. 0
 
 
-def flange(nid, x, y, z=0.0, length=0.025):
+def flange(nid, x, y, z=0.0, length=0.0265):
+    # the IR length is the OUTER dimension (the tool default since 2026-10-28): 26.5 mm from the plate's outer face = the wall stands 25 mm above the plate's top face, as every test below was measured
     return {"id": nid, "type": "edge_flange", "edge": at(x, y, z), "length": length}
 
 
@@ -290,7 +291,7 @@ def t_gauge():
     refused(bad, "GAUGE_NOT_FOUND", "n2")
 
 
-@test("I04 A WALL ON THE PLATE (edge_flange, length mode): plate + one 25 mm flange = 100 x 60 x 26.5 mm, the anchor resolved to the edge by index")
+@test("I04 A WALL ON THE PLATE (edge_flange, length mode): plate + one flange of 26.5 mm OUTER length (= 25 mm above the plate's top face) = 100 x 60 x 26.5 mm, the anchor resolved to the edge by index")
 def t_tray():
     ok(build(graph(TRAY1)))
     z, y, x = extent(2), extent(1), extent(0)
@@ -558,6 +559,49 @@ def t_surface_prep():
     near(o["size_change"][0], 0.003, 1e-7, "x grows by 2 d"); near(o["size_change"][2], 0.0015, 1e-7, "z grows by d")
     refused(build(graph(box, {"id": "o", "type": "offset_surface", "body": at(9, 9, 9), "distance": 0.001})), "FACE_NOT_FOUND", "o")
     refused(build(graph(box, {"id": "o", "type": "offset_surface", "body": at(0, 0, 0), "distance": 0})), "VALIDATION_FAILED")
+
+
+@test("I24 THE USER'S DFM RULES AS A GRAPH: fully_define_sketches makes the plate sketch (rectangle + a hole) fully defined (strict, status 3); ONE edge_flange node with four anchors (`edges`) is ONE multi-edge feature (4 edges, 4 bends), and an angle of 89 degrees read off a picture is snapped to exactly 90 (angle_exact keeps it)")
+def t_dfm_rules():
+    plate = [sk("s1", "front", [rect(0.1, 0.06), {"kind": "circle", "cx": 0.02, "cy": 0.01, "diameter": 0.006}]),
+             {"id": "n2", "type": "sheet_metal", "sketch": "s1", "thickness": 0.00127, "bend_radius": 0.001905, "k_factor": 0.45}]
+    res = ok(build(graph(plate, fully_define_sketches=True)), "plate with a fully defined sketch")
+    fd = [op for op in node(res, "s1")["ops"] if op["tool"] == "sketch_fully_define"]
+    check(len(fd) == 1 and fd[0]["result_geometry"]["constrained"] == "fully_defined" and fd[0]["result_geometry"]["verified"] is True, "sketch_fully_define: %s" % fd)
+    perimeter = [e for e in edges() if abs(e["mid"][2]) < 1e-5 and (abs(abs(e["mid"][0]) - 0.05) < 1e-6 or abs(abs(e["mid"][1]) - 0.03) < 1e-6)]
+    check(len(perimeter) == 4, "four perimeter edges: %d" % len(perimeter))
+    res = ok(build(graph({"id": "ef", "type": "edge_flange", "edges": [at(*e["mid"]) for e in perimeter], "angle": math.radians(89.0), "length": 0.0127}), fresh=False), "multi-edge flange")
+    r = rg(res, "ef", "sheet_metal_feature")
+    check(r["verified"] is True and r["edges"] == 4, r)
+    near(r["angle_deg"], 90.0, 1e-9, "the 89 degrees are snapped to exactly 90"); check("snapped to exactly 90" in r.get("angle_note", ""), r)
+    p = params_get()
+    check(len(p["edge_flanges"]) == 1 and len(p["bends"]) == 4, "ONE edge-flange feature with 4 bends: %s" % json.dumps(p["edge_flanges"]))
+    # angle_exact keeps a stated angle
+    ok(build(graph(plate, fully_define_sketches=True)), "plate again")
+    perimeter = [e for e in edges() if abs(e["mid"][2]) < 1e-5 and (abs(abs(e["mid"][0]) - 0.05) < 1e-6 or abs(abs(e["mid"][1]) - 0.03) < 1e-6)]
+    res = ok(build(graph({"id": "ef", "type": "edge_flange", "edges": [at(*e["mid"]) for e in perimeter], "angle": math.radians(89.0), "angle_exact": True, "length": 0.0127}), fresh=False), "exact angle")
+    near(rg(res, "ef", "sheet_metal_feature")["angle_deg"], 89.0, 1e-6, "angle_exact keeps 89")
+    # validation: edge + edges together, one anchor in edges
+    refused(build(graph(plate, {"id": "ef", "type": "edge_flange", "edge": at(0, 0.03, 0), "edges": [at(0, 0.03, 0), at(0.05, 0, 0)], "length": 0.0127})), "VALIDATION_FAILED")
+    refused(build(graph(plate, {"id": "ef", "type": "edge_flange", "edges": [at(0, 0.03, 0)], "length": 0.0127})), "VALIDATION_FAILED")
+
+
+@test("I25 A MASTER-DRIVEN SKETCH AS A GRAPH: a master rectangle + a surface extrude, then a sketch with `from_edges` (the master's four z = 0 edges) feeds the base flange - 100 x 60 blank - and widening the master (D1@Sketch1 -> 120 mm) moves the flange's blank to 120 x 60")
+def t_master_driven():
+    master = [sk("m", "front", [rect(0.1, 0.06)]), {"id": "ms", "type": "surface_extrude", "sketch": "m", "depth": 0.03}]
+    flange_sk = {"id": "s2", "type": "sketch", "ref": {"datum": "front"}, "from_edges": [at(0, 0.03, 0), at(0, -0.03, 0), at(0.05, 0, 0), at(-0.05, 0, 0)]}
+    # the master is FULLY DEFINED (fully_define_sketches): its dimensions are what drives the flange
+    res = ok(build(graph(master, flange_sk, {"id": "n3", "type": "sheet_metal", "sketch": "s2", "thickness": 0.00127, "bend_radius": 0.001905, "k_factor": 0.45}, fully_define_sketches=True)), "master-driven base flange")
+    conv = [op for op in node(res, "s2")["ops"] if op["tool"] == "sketch_convert_entities"]
+    check(len(conv) == 1 and conv[0]["result_geometry"]["verified"] is True and conv[0]["result_geometry"]["created_segments"] == 4, "convert: %s" % conv)
+    cl = params_get()["cut_list"][0]["properties"]
+    near(cl["Bounding Box Length"], 100.0, 1e-3, "blank X"); near(cl["Bounding Box Width"], 60.0, 1e-3, "blank Y")
+    fd = [op for op in node(res, "m")["ops"] if op["tool"] == "sketch_fully_define"][0]["result_geometry"]
+    xdim = next(d for d in fd["dimensions"] if abs(d["value"] - 0.05) < 1e-9)          # an x ordinate of the master rectangle (+-50 mm)
+    r = server._call_raw("modify_dimension", {"name": xdim["name"], "value": 0.07})
+    check(r.get("status") == "COMPLETED", r)
+    cl = params_get()["cut_list"][0]["properties"]
+    near(cl["Bounding Box Length"], 120.0, 1e-3, "blank X after the MASTER's x dimension 50 -> 70 mm"); near(cl["Bounding Box Width"], 60.0, 1e-3, "blank Y")
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------

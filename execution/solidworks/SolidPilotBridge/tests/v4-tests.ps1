@@ -1,7 +1,7 @@
 # The user's v4 enclosure (enclosure_nema_cabinet_dfm_cr_steel_16ga_copy_v4.SLDPRT: 12 x 18 in, 4 in deep, rim 1.00 in on x / 0.75 in on y, lip 0.5 in, t 1.6 mm, r 3 mm, K 0.5) REBUILT WITH TOOLS ONLY, in the
 # user's recipe and order: base shape -> delete the cap -> surface offset inward by t -> four rip sketches -> Convert to Sheet Metal (in-process; bends picked in the order stored in the reference) -> Unfold ->
 # ONE multi-radius fillet on the twelve outline corners (10 / 15 / 5 mm) -> corner trim (sketch with the user's spline, mid-plane surface extrude, surface cut, mirrors) -> Fold -> flat pattern + DXF.
-# Every number was measured READ-ONLY on the reference (SHEETMETAL-FINDINGS.txt section 8): V00-V02 assert them as constants; V03 (needs -Reference <the user's v4 .SLDPRT>) exports the reference's flat DXF and
+# Every number was measured READ-ONLY on the reference: V00-V02 assert them as constants; V03 (needs -Reference <the user's v4 .SLDPRT>) exports the reference's flat DXF and
 # compares it entity by entity - the reference file itself is never part of the repository and never saved or modified (opened read-only, closed without saving).
 # V00 -> V01 -> V02 share ONE part (each continues where the previous one stopped): run them together. Needs SolidWorks running with the bridge (shell >= 0.9), tools loaded, NOTHING else open.
 # Usage: v4-tests.ps1 [-Force] [-Json out.json] [-Only 'V0[012]'] [-Reference 'C:\...\..._copy_v4.SLDPRT']

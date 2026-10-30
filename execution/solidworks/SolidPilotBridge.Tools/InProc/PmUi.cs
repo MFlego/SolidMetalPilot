@@ -300,7 +300,7 @@ namespace SolidworksExecution.Services
         // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         // picking in the graphics area
         // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        /// <summary>Model point (m) to screen pixel in the active view. Calibrated 2026-10-26 (SHEETMETAL-FINDINGS): IModelView.Transform.ArrayData is a 3x3 COLUMN-major rotation (0..8), a translation
+        /// <summary>Model point (m) to screen pixel in the active view. Calibrated 2026-10-26: IModelView.Transform.ArrayData is a 3x3 COLUMN-major rotation (0..8), a translation
         /// (9..11) and a scale in pixels per meter (12); m9 is an absolute screen x, y is measured from the top of the visible box.</summary>
         public static int[] Project(IModelView view, double[] p)
         {

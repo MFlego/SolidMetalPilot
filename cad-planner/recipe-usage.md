@@ -85,6 +85,14 @@ original — these rules replace the readback discipline there. C1–C5 still ap
   those exist for verbatim replay); `material {name, library?}` at graph level; a GRID as a
   pattern OF a pattern (a `linear_pattern` seeding on an earlier `linear_pattern` — the tool
   has no second direction).
+- **The fabricator's rules for a FORWARD graph (user rules, Phase 7 post-mortem).** (1) **Set `fully_define_sketches: true`
+  at graph level** - every sketch (hole sketches too) is then fully defined by a strict `sketch_fully_define` after its
+  entities (a node's own `fully_define` wins; the default is off only so that a replay of an analysed part keeps the
+  original's sketches). (2) **Flanges with equal parameters are ONE `edge_flange` node**: `edges: [anchor, ...]` + `length`
+  (never one node per edge); neighbouring flanges meet in a tight closed corner (`gap`, default 0.003 in). (3) **Bends are
+  exactly 90°**: omit `angle`; an angle within 5° of 90° is snapped to 90 by the tool, and `angle_exact: true` is for an angle
+  the USER stated - never one read off a picture. (4) **Master-driven profiles**: a `sketch` with `from_edges: [anchor, ...]`
+  converts the edges of the master shape (the LOD <= 100 base shape) into the sketch, so the master drives the base flange.
 - **Sheet-metal DFM vocabulary (schema 0.8, forward-only — the reader does not produce these nodes).** One node per
   feature, in tree order. Geometry is referenced by ANCHORS `{near:[x,y,z]}` — a point ON the face / edge in the state
   the node meets (an INTERIOR point, never a boundary construction); earlier sketches and features by node id. The

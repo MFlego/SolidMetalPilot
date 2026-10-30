@@ -26,6 +26,8 @@ REACHABLE = {
     "open_new_assembly": ("fresh_document",),
     "create_sketch": ("sketch", "box", "hole", "edge_flange"),
     "add_sketch_entity": ("sketch", "box", "hole", "edge_flange"),
+    "sketch_fully_define": ("sketch", "hole"),
+    "sketch_convert_entities": ("sketch",),
     "add_reference_geometry": ("sketch", "circular_pattern"),
     "extrude_feature": ("box", "extrude", "revolve", "sweep", "loft", "hole"),
     "create_rib": ("rib",),

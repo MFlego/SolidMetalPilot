@@ -18,7 +18,7 @@ foreach ($t in $targets | Select-Object -First $Flanges) {
     $edge = (Get-Edges).edges | Where-Object { [math]::Abs($_.mid[2] - $t[2]) -lt 1e-4 } | Sort-Object { [math]::Abs($_.mid[0] - $t[0]) + [math]::Abs($_.mid[1] - $t[1]) } | Select-Object -First 1
     if ($edge -and ([math]::Abs($edge.mid[0] - $t[0]) + [math]::Abs($edge.mid[1] - $t[1])) -gt 0.006) { $edge = $null }
     if (-not $edge) { "no edge found at ($($t -join ', '))"; continue }
-    $r = Invoke-Tool sheet_metal_feature @{ feature_type = 'edge_flange'; edge_index = [int]$edge.i; flange_length = 0.025; angle = 90; bend_radius = 0.0015; thickness = 0.0015 }
+    $r = Invoke-Tool sheet_metal_feature @{ feature_type = 'edge_flange'; edge_index = [int]$edge.i; flange_length = 0.025; dimension_type = 'inner'; angle = 90; bend_radius = 0.0015; thickness = 0.0015 }
     Step ("edge_flange @(" + ($t -join ',') + ")") $r
 }
 $g = Get-Analysis 'geometry'; "geometry: $($g -join ' ')"

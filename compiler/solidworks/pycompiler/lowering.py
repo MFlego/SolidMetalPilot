@@ -80,7 +80,7 @@ def lower_box(node):
     ]
 
 
-def lower_sketch(node, face_index=None):
+def lower_sketch(node, face_index=None, convert_indices=None):
     """sketch -> support op(s) + create_sketch + one entity per profile primitive (leaves the
     sketch active). Support preference for offset != 0 (decided with the user, 2026-07-05):
       1. face_index given (the resolver found an EXISTING face on that plane) -> sketch ON the
@@ -106,7 +106,13 @@ def lower_sketch(node, face_index=None):
     else:
         plane = _PLANE[_datum(node)]
         ops.append(Op("create_sketch", {"plane": plane, "on_face": False}, "sketch on " + plane))
-    for prim in node.get("profile", []):
+    if convert_indices:
+        # master-driven sketch: the master body's edges become the sketch's geometry (Convert Entities); strict -
+        # a conversion that took nothing, or left the sketch under-defined, stops the node
+        ops.append(Op("sketch_convert_entities", {"points": [[float(c) for c in pt] for pt in convert_indices]},
+                      "convert the master's %d edge(s) into the sketch (the master drives the profile)"
+                      % len(convert_indices), True))
+    for prim in node.get("profile") or []:
         ops.append(_profile_op(prim))
     return ops
 
@@ -388,10 +394,25 @@ def lower_edge_flange(node, edge_index):
         read-back values (IR-ADR-014); radius OMITTED => the sheet default; position OMITTED =>
         material_inside (the tool default). Angle: IR RADIANS -> tool-boundary DEGREES (C4)."""
     angle_deg = math.degrees(float(node.get("angle") or (math.pi / 2.0)))
+    if isinstance(edge_index, (list, tuple)):
+        # ONE multi-edge flange: every edge that shares the parameters is one feature (the tool takes
+        # edge_indices; an angle within 5 degrees of 90 snaps to exactly 90 unless angle_exact)
+        indices = [int(i) for i in edge_index]
+        params = {"feature_type": "edge_flange", "edge_indices": indices,
+                  "flange_length": float(node["length"]), "angle": angle_deg}
+        if node.get("angle_exact") is True:
+            params["angle_exact"] = True
+        if node.get("gap") is not None:
+            params["gap"] = float(node["gap"])
+        return [Op("sheet_metal_feature", params,
+                   "edge flange (multi-edge, ONE feature): length %g on edges %s"
+                   % (float(node["length"]), indices))]
     if node.get("length") is not None:
-        return [Op("sheet_metal_feature",
-                   {"feature_type": "edge_flange", "edge_index": int(edge_index),
-                    "flange_length": float(node["length"]), "angle": angle_deg},
+        params = {"feature_type": "edge_flange", "edge_index": int(edge_index),
+                  "flange_length": float(node["length"]), "angle": angle_deg}
+        if node.get("angle_exact") is True:
+            params["angle_exact"] = True
+        return [Op("sheet_metal_feature", params,
                    "edge flange (simple): length %g on edge #%d"
                    % (float(node["length"]), int(edge_index)))]
     gen = {"feature_type": "edge_flange_sketch", "edge_index": int(edge_index),

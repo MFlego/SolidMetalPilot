@@ -481,7 +481,11 @@
     "ey": "number (edge_flange \u2014 Y coordinate of point on target edge)",
     "ez": "number (edge_flange \u2014 Z coordinate of point on target edge)",
     "flange_length": "number (edge_flange \u2014 flange length in meters, default 0.02)",
-    "angle": "number (edge_flange/sketched_bend \u2014 bend angle in degrees, default 90.0)",
+    "dimension_type": "string (edge_flange / edge_flange_finish \u2014 what the flange length is measured to: 'outer' (default, the outer virtual sharp), 'inner' or 'tangent'; SolidWorks otherwise reuses its UI's last choice)",
+    "angle": "number (edge_flange/sketched_bend \u2014 bend angle in degrees, default 90.0. HARD DEFAULT 90: an edge_flange angle within 5 degrees of 90 is snapped to exactly 90 and the reply carries angle_note, unless angle_exact=true)",
+    "gap": "number (edge_flange with several edges, meters, default 0.0000762 = 0.003 in — the gap between neighbouring flanges at a corner: tight, weld-ready; SolidWorks' own default of 1 mm makes it refuse the multi-edge definition)",
+    "angle_exact": "boolean (edge_flange only, default false \u2014 keep an angle within 5 degrees of 90 as given; set it only when the USER stated that angle, never for an angle read off a picture)",
+    "edge_indices": "array of integers (edge_flange only \u2014 SEVERAL attach edges (analyze_model(edges) indices) flanged in ONE multi-edge feature that shares one length / angle / radius; adjacent flanges mitre at the corner. The result reads back edges, length, angle_deg, dimension_type and verified. Use it for every set of flanges with equal parameters instead of one feature per edge)",
     "use_default_radius": "boolean (sketched_bend only, default false \u2014 true uses the sheet's default bend radius)",
     "flip": "boolean (sketched_bend only, default false \u2014 reverse the bend direction)",
     "bend_position": "string (sketched_bend only \u2014 'centerline' (default), 'material_inside', 'material_outside', or 'bend_outside'; matches the `position` analyze_model(features) reports on an SM3dBend)",
@@ -533,7 +537,8 @@
     "relief_ratio": "number (set — auto-relief ratio)",
     "thickness": "number (set — sheet thickness in meters, via the base flange / Convert overrides)",
     "bend_radius": "number (set — bend radius in meters, via the base flange / Convert overrides)",
-    "reset_overrides": "string/array (set — 'bend_allowance,auto_relief,bend_parameters': switch the override off; bend_allowance off removes D2@Sheet-Metal1)"
+    "reset_overrides": "string/array (set — 'bend_allowance,auto_relief,bend_parameters': switch the override off; bend_allowance off removes D2@Sheet-Metal1)",
+    "feature": "string (get/set — which Sheet-Metal feature = which sheet-metal body when the part has several base flanges: 'Sheet-Metal1', 'Sheet-Metal13' ...; default the first; a get lists all of them in sheet_metal_features)"
    }
   },
   "output": "→ see execution-response.json — result_geometry is the sheet-metal summary (+ set / verified / problems / notes for action='set')"
@@ -566,10 +571,11 @@
     "show_slit_in_corner_relief": "boolean (optional)",
     "dxf_path": "string (optional — write the flat DXF here; SAVE_REQUIRED when the part has never been saved)",
     "dxf_flags": "integer (default 5 — 1 = outline, 5 = outline + bend lines)",
-    "leave_flat": "boolean (default false — keep the flat pattern unsuppressed)"
+    "leave_flat": "boolean (default false — keep the flat pattern unsuppressed)",
+    "feature": "string (optional — which Flat-Pattern feature = which sheet-metal body when the part has several: 'Flat-Pattern1', 'Flat-Pattern13' ...; default the first; with several bodies dxf_path writes ONE DXF PER BODY named '<Flat-Pattern> - <stem>.dxf')"
    }
   },
-  "output": "→ see execution-response.json — result_geometry {folded{size,faces,edges}, flat{size,faces,edges}, options, dxf{path,flags,written,bytes}, flat_pattern_left, verified}"
+  "output": "→ see execution-response.json — result_geometry {folded{size,faces,edges,bodies[{name,size,faces}] when several}, flat{size,faces,edges}, flat_pattern, flat_patterns[] when several, options, dxf{path,flags,written,bytes}, flat_pattern_left, verified}"
  },
  "sheet_metal_hem": {
   "description": "Hems the free edge(s) of sheet-metal walls (IFeatureManager.InsertSheetMetalHem2): closed, open, tear_drop (180 < angle < 270) or rolled; double is refused by SolidWorks for every parameter set tried. All edges of one call make ONE Hem feature. The hem folds toward the side of the picked edge (outer top edge -> outward). Edges are selected as objects (indices from analyze_model(edges) or points on them). Returns the hem's definition read back + body before/after. Lengths meters, angle degrees. Bumps state_version.",
@@ -946,17 +952,43 @@
   "output": "→ see execution-response.json — result_geometry {unit, count, equations[{index, name, text, value, global_variable, disabled}], requested, problems, verified}"
  },
  "sketch_center_rectangle": {
-  "description": "Creates the resilient master sketch in one call: a rectangle centred on the origin of a plane, FULLY DEFINED by two dimensions (D1 width on X, D2 height on Y) and the centre tied to the origin. The sketch is left active for the next feature. The plane is selected by name (view independent). Meters. Bumps state_version.",
+  "description": "Creates the resilient master sketch in one call: a rectangle centred on the origin of a plane, FULLY DEFINED by two dimensions (D1 width on X, D2 height on Y) and the centre tied to the origin. center_x / center_y put the centre off the origin (a body beside another one): one more driving dimension per non-zero offset (the next free D number: X offset first, then Y offset), still fully defined. The sketch is left active for the next feature. The plane is selected by name (view independent). Meters. Bumps state_version.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "width": "number (required — meters, X extent)",
     "height": "number (required — meters, Y extent)",
-    "plane": "string (default 'Front Plane')"
+    "plane": "string (default 'Front Plane')",
+    "center_x": "number (optional — meters, default 0: the centre's X offset from the origin; a driving dimension)",
+    "center_y": "number (optional — meters, default 0: the centre's Y offset from the origin; a driving dimension)"
    }
   },
   "output": "→ see execution-response.json — result_geometry {sketch, plane, width, height, dimensions['D1@Sketch1','D2@Sketch1'], constrained_status, constrained, verified}"
+ },
+ "sketch_fully_define": {
+  "description": "FULLY DEFINES the active sketch (user rule, Phase 7 post-mortem: every sketch, even a hole sketch). Every arc / circle centre and every vertex gets a horizontal and a vertical dimension to the sketch ORIGIN (a point ON an axis gets a relation instead), every circle / arc its diameter / radius; SolidWorks is the oracle for redundancy: a dimension that comes out driven (it would over-define) is deleted again, an over-defining relation is undone. ISketchManager.FullyDefineSketch stops half way (measured), so the tool does the definition itself. Call it right after the sketch's entities (create_sketch + add_sketch_entities) and before the feature that consumes the sketch; `sketch` opens an earlier sketch for it. Result: {sketch, status_before, constrained_status (3 = fully defined), dimensions[{name, value}], relations[], redundant_dimensions_removed, verified}. Splines / ellipses are reported as problems (their points are not dimensioned). Meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "sketch": "string (optional — the name of the sketch to define; default the ACTIVE sketch. NO_ACTIVE_SKETCH when there is neither)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {sketch, status_before, constrained_status, constrained, dimensions, relations, redundant_dimensions_removed, problems, verified}"
+ },
+ "sketch_convert_entities": {
+  "description": "CONVERT ENTITIES: the listed edges of the MASTER body (the LOD <= 100 base shape, a solid or a surface) become sketch geometry of the ACTIVE sketch, related to the master edges - the master shape DRIVES the profile (user rule: master sketches and the primary driving dimensions come from the surface construction, they are not retyped). Typical use: master solid / surface -> create_sketch on the plane of the base flange -> this tool with the master's outline edges -> sheet_metal_feature base_flange. The converted geometry is defined by the master, so no free dimensions remain. `points` = a point ON each straight master edge (found on solid AND surface bodies - the master is usually a surface, which analyze_model(edges) does not list); `edges` = indices from analyze_model(edges) (solid bodies only); `chain` also takes tangent-connected edges (default false). Result: {sketch, edges, created_segments, size[w,h], constrained_status (3 = fully defined), verified, problems}. Meters. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "points": "array of [x,y,z] (meters) — a point ON each straight master edge, solid OR surface body (PREFERRED: a surface master has no edge indices)",
+    "edges": "array of integers (edge indices from analyze_model(edges), SOLID bodies only) — master edges to convert, as an alternative / addition to `points`",
+    "chain": "boolean (default false) — also convert every tangent-connected edge"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {sketch, edges, created_segments, size, constrained_status, constrained, problems, verified}"
  },
  "modify_dimension": {
   "description": "Universal parametric edit: sets a named display dimension's value in SI units (meters for length, radians for angle), rebuilds, and bumps state_version. Pairs with analyze_model(features), which reports each feature's dimension full-names + SI values. The keystone for building variants.",

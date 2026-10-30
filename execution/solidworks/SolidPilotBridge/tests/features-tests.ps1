@@ -613,6 +613,105 @@ Test 'R05 a part without two-bend corners: a plain plate says NO_CORNERS (nothin
     Fresh-Part; Fail (Relief @{ relief = 'circular'; width = 0.003 }) 'NOT_SHEET_METAL' 'an empty part' | Out-Null
 }
 
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# B: what the two-body enclosure of Phase 7 (the motion-control case, 2026-10-28) taught: the flange length measure, a K-factor per sheet-metal body, one flat DXF per body
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+function SmParams { Rg (Ok (Invoke-Tool 'sheet_metal_params' @{ action = 'get' }) 'sheet_metal_params get') }
+function TwoPlates([double]$k1 = 0.46, [double]$k2 = 0.46) {      # two plates in ONE part, clear of each other (the second on an offset plane): two sheet-metal bodies, two Sheet-Metal features
+    Fresh-Part
+    Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.1; height = 0.06 }) 'plate 1 sketch' | Out-Null
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.0015; bend_radius = 0.0015; k_factor = $k1 }) 'base flange 1' | Out-Null
+    Ok (Invoke-Tool 'add_reference_geometry' @{ type = 'plane'; ref_plane_name = 'Front Plane'; offset = 0.05 }) 'offset plane' | Out-Null
+    Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Plane1'; width = 0.08; height = 0.04 }) 'plate 2 sketch' | Out-Null
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.0015; bend_radius = 0.0015; k_factor = $k2 }) 'base flange 2' | Out-Null
+}
+
+Test 'B00 EDGE FLANGE LENGTH is measured to the OUTER virtual sharp by default (the flange length is the outer dimension), inner / tangent on request, and the definition is read back' {
+    foreach ($case in @(@{ dt = ''; h = 0.0200 }, @{ dt = 'outer'; h = 0.0200 }, @{ dt = 'inner'; h = 0.0215 })) {
+        Fresh-Part
+        Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.1; height = 0.06 }) 'plate sketch' | Out-Null
+        Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.0015; bend_radius = 0.0015 }) 'plate' | Out-Null
+        $p = @{ feature_type = 'edge_flange'; ex = 0; ey = -0.03; ez = 0; flange_length = 0.02 }; if ($case.dt) { $p.dimension_type = $case.dt }
+        $r = Ok (Invoke-Tool 'sheet_metal_feature' $p) "edge flange ($($case.dt))"; $rg = Rg $r
+        Assert ($rg.verified -eq $true -and -not $rg.problems) "read-back ($($case.dt)): $($rg | ConvertTo-Json -Compress)"; Near $rg.length 0.02 1e-9 'OffsetDistance read back'
+        Assert ($rg.dimension_type -eq $(if ($case.dt) { $case.dt } else { 'outer' })) "dimension type read back: $($rg.dimension_type)"
+        $z = (Rg (Ok (Invoke-Tool 'flat_pattern_control' @{}) 'folded size')).folded.size[2]; Near $z $case.h 1e-6 "overall height with dimension_type '$($case.dt)' (outer = the length, inner = length + t)"
+    }
+}
+
+Test 'B01 TWO SHEET-METAL BODIES: every base flange gets ITS OWN K (the second used to stay at the template 0.5), sheet_metal_params lists both Sheet-Metal features, feature= selects / sets one, the cut list shows K per body' {
+    TwoPlates 0.46 0.42
+    $p = SmParams; $f = @($p.sheet_metal_features); Assert ($f.Count -eq 2) "two Sheet-Metal features expected: $($f | ConvertTo-Json -Compress)"
+    Near $f[0].k_factor 0.46 1e-9 'K of the first body'; Near $f[1].k_factor 0.42 1e-9 'K of the second body (not the template 0.5)'
+    $cl = @($p.cut_list); Assert ($cl.Count -eq 2) "two cut-list items: $($cl.Count)"; Near ([double]$cl[0].properties.'Bend Allowance') 0.46 1e-9 'cut list K, body 1'; Near ([double]$cl[1].properties.'Bend Allowance') 0.42 1e-9 'cut list K, body 2'
+    $sel = Rg (Ok (Invoke-Tool 'sheet_metal_params' @{ action = 'get'; feature = $f[1].feature }) 'get one'); Assert ($sel.global.feature -eq $f[1].feature) "the global block is the feature asked for: $($sel.global.feature)"; Near $sel.global.bend_allowance.k_factor 0.42 1e-9 'K of the selected body'
+    $e = Fail (Invoke-Tool 'sheet_metal_params' @{ action = 'get'; feature = 'Nope' }) 'FEATURE_NOT_FOUND' 'an unknown Sheet-Metal feature'; Assert ($e.error.message -like '*Sheet-Metal*') $e.error.message
+    $s = Rg (Ok (Invoke-Tool 'sheet_metal_params' @{ action = 'set'; feature = $f[0].feature; k_factor = 0.5 }) 'set K on the first body only'); Assert ($s.verified -eq $true) "set: $($s | ConvertTo-Json -Compress -Depth 4)"
+    $q = @((SmParams).sheet_metal_features); Near $q[0].k_factor 0.5 1e-9 'the first body follows'; Near $q[1].k_factor 0.42 1e-9 'the second body is untouched'
+}
+
+function DxfExtents([string]$path) {                 # min / max of the x (group codes 10 / 11) and y (20 / 21) values of the LINE entities (the header carries 1e20 extents, the Maker licence note is an MTEXT far from the part): a plate's flat is its rectangle
+    $l = @(Get-Content $path); $xs = @(); $ys = @(); $start = [array]::IndexOf(@($l | ForEach-Object { $_.Trim() }), 'ENTITIES'); Assert ($start -ge 0) 'the DXF has no ENTITIES section'; $cur = ''
+    for ($i = $start - 1; $i -lt $l.Count - 1; $i += 2) {         # the ENTITIES line is the VALUE of group code 2: the pairs start one line earlier
+        $c = $l[$i].Trim(); $v = $l[$i + 1].Trim()
+        if ($c -eq '0') { if ($v -eq 'ENDSEC') { break }; $cur = $v; continue }
+        if ($cur -ne 'LINE') { continue }
+        if ($c -eq '10' -or $c -eq '11') { $xs += [double]::Parse($v, [Globalization.CultureInfo]::InvariantCulture) } elseif ($c -eq '20' -or $c -eq '21') { $ys += [double]::Parse($v, [Globalization.CultureInfo]::InvariantCulture) }
+    }
+    @((($xs | Measure-Object -Maximum).Maximum - ($xs | Measure-Object -Minimum).Minimum), (($ys | Measure-Object -Maximum).Maximum - ($ys | Measure-Object -Minimum).Minimum))
+}
+
+Test 'B02 TWO BODIES -> ONE FLAT DXF PER BODY: a single-file export wrote only the first body''s flat (measured); with several Flat-Pattern features the tool writes "<Flat-Pattern> - <stem>.dxf" for each, with each body''s own size, and folds the part again' {
+    TwoPlates 0.46 0.46
+    $dir = Join-Path $env:TEMP 'sp_b02_flats'; New-Item -ItemType Directory -Force $dir | Out-Null
+    Ok (Invoke-Tool 'save_document' @{ file_path = (Join-Path $dir 'b02.sldprt') }) 'save' | Out-Null
+    $r = Rg (Ok (Invoke-Tool 'flat_pattern_control' @{ dxf_path = (Join-Path $dir 'flat.dxf') }) 'flat DXFs'); Assert ($r.verified -eq $true) "flat: $($r | ConvertTo-Json -Compress -Depth 5)"
+    Assert (@($r.flat_patterns).Count -eq 2) "two flat patterns: $(@($r.flat_patterns) -join ',')"; $files = @($r.dxf.files); Assert ($files.Count -eq 2 -and $r.dxf.written -eq $true) "two files: $($r.dxf | ConvertTo-Json -Compress -Depth 4)"
+    foreach ($f in $files) { Assert (Test-Path $f.path) "missing $($f.path)"; Assert ((Split-Path $f.path -Leaf) -eq ($f.flat_pattern + ' - flat.dxf')) "name: $($f.path)" }
+    $e1 = DxfExtents $files[0].path; $e2 = DxfExtents $files[1].path
+    Near $e1[0] 100 1e-3 'first flat, X (mm)'; Near $e1[1] 60 1e-3 'first flat, Y (mm)'; Near $e2[0] 80 1e-3 'second flat, X (mm)'; Near $e2[1] 40 1e-3 'second flat, Y (mm)'
+    Assert ($r.flat_pattern_left -eq 'suppressed') "left: $($r.flat_pattern_left)"; foreach ($n in @($r.flat_patterns)) { $fd = (Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'list')).features | Where-Object { $_.name -eq $n }; Assert ($fd.suppressed -eq $true) "$n must be suppressed again" }
+    Fail (Invoke-Tool 'flat_pattern_control' @{ feature = 'Flat-Pattern99' }) 'FEATURE_NOT_FOUND' 'an unknown flat pattern' | Out-Null
+}
+
+# 100 x 60 plate, 18 ga stainless (0.050 in), R 0.075 in: its FOUR perimeter edges on the top face (z = 0); $WithHole adds a 6 mm hole (its circle edge is a fifth edge on that face)
+function EdgePlate([switch]$WithHole) {
+    Fresh-Part; Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06 }) 'plate sketch' | Out-Null
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.00127; bend_radius = 0.001905; k_factor = 0.45 }) 'base flange' | Out-Null
+    $e = (Get-Edges).edges | Where-Object { [math]::Abs($_.mid[2]) -lt 1e-5 -and ([math]::Abs([math]::Abs($_.mid[0]) - 0.05) -lt 1e-6 -or [math]::Abs([math]::Abs($_.mid[1]) - 0.03) -lt 1e-6) }
+    Assert (@($e).Count -eq 4) "four perimeter edges: $(@($e).Count)"; @($e | ForEach-Object { [int]$_.i })
+}
+Test 'B03 ONE MULTI-EDGE EDGE FLANGE (user rule: flanges with equal parameters are ONE feature): four plate edges in one call = ONE Edge-Flange with 4 edges and 4 bends, 0.5 in outer length, exactly 90 degrees, 0.003 in gap, tight corners' {
+    $idx = EdgePlate
+    $r = Rg (Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $idx; flange_length = 0.0127; angle = 90; dimension_type = 'outer' }) 'multi-edge flange'); Assert ($r.verified -eq $true) "verified: $($r | ConvertTo-Json -Compress -Depth 4)"
+    Assert ($r.edges -eq 4) "edges: $($r.edges)"; Near $r.length 0.0127 1e-7 'length'; Near $r.angle_deg 90 1e-9 'angle (deg)'; Assert ($r.dimension_type -eq 'outer') "dimension type $($r.dimension_type)"
+    $p = Rg (Ok (Invoke-Tool 'sheet_metal_params' @{ action = 'get' }) 'params'); Assert (@($p.edge_flanges).Count -eq 1) "ONE edge-flange feature, not four: $(@($p.edge_flanges).Count)"; Assert (@($p.bends).Count -eq 4) "four bends: $(@($p.bends).Count)"
+    Near $p.edge_flanges[0].gap 0.0000762 1e-9 'rip gap between neighbouring flanges (0.003 in)'
+    $cl = @($p.cut_list)[0].properties; Assert ($cl.Bends -eq 4) "cut list bends $($cl.Bends)"
+    $z = (Get-Analysis 'geometry'); Assert (($z -join ' ') -match 'bodies=1') "one body: $($z -join ' ')"
+    $fd = Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'list'); $subs = @($fd.features | Where-Object { $_.type -eq 'EdgeFlange' }); Assert ($subs.Count -eq 1) "feature tree holds ONE EdgeFlange: $($subs.Count)"
+}
+Test 'B04 HARD DEFAULT 90 DEGREES: an angle within 5 degrees of 90 (read off a picture: 89.0) is SNAPPED to exactly 90 and the reply says so; angle_exact=true keeps it; 80 degrees is never touched' {
+    $idx = EdgePlate
+    $r = Rg (Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $idx; flange_length = 0.0127; angle = 89.0 }) 'flange at 89'); Assert ($r.verified -eq $true) "verified: $($r | ConvertTo-Json -Compress -Depth 4)"
+    Near $r.angle_deg 90 1e-9 'snapped angle (deg)'; Assert ($r.angle_note -like '*snapped to exactly 90*') "note: $($r.angle_note)"
+    $idx = EdgePlate
+    $r = Rg (Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $idx; flange_length = 0.0127; angle = 89.0; angle_exact = $true }) 'flange at 89, exact'); Assert ($r.verified -eq $true) "verified: $($r | ConvertTo-Json -Compress -Depth 4)"
+    Near $r.angle_deg 89 1e-6 'kept angle (deg)'; Assert (-not $r.angle_note) 'no note when the angle is kept'
+    $idx = EdgePlate
+    $r = Rg (Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_index = $idx[0]; flange_length = 0.0127; angle = 80.0 }) 'single flange at 80'); Near $r.angle_deg 80 1e-6 'an 80 degree flange is not touched'; Assert (-not $r.angle_note) 'no note at 80'
+}
+Test 'B05 A MULTI-EDGE FLANGE THAT SOLIDWORKS REFUSES (a hole''s circle edge among the plate edges) says MULTI_EDGE_FLANGE_FAILED and leaves the part exactly as it was (no half-made one-edge flange, no loose profile sketches); a bad index is EDGE_NOT_FOUND' {
+    Fresh-Part; Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06 }) 'plate sketch' | Out-Null
+    Ok (Invoke-Tool 'add_sketch_entity' @{ entity_type = 'circle'; cx = 0.02; cy = 0.01; radius = 0.003 }) 'hole' | Out-Null
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.00127; bend_radius = 0.001905; k_factor = 0.45 }) 'base flange' | Out-Null
+    $top = @((Get-Edges).edges | Where-Object { [math]::Abs($_.mid[2]) -lt 1e-5 } | ForEach-Object { [int]$_.i }); Assert ($top.Count -eq 5) "5 top-face edges (4 + the hole): $($top.Count)"
+    $f0 = @((Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'list')).features).Count
+    Fail (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $top; flange_length = 0.0127 }) 'MULTI_EDGE_FLANGE_FAILED' 'the circle edge among the flange edges' | Out-Null
+    $f1 = @((Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'list')).features).Count; Assert ($f0 -eq $f1) "features before $f0, after $f1 (the refused call must leave nothing behind)"
+    Fail (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = @(8, 9999); flange_length = 0.0127 }) 'EDGE_NOT_FOUND' 'an index out of range' | Out-Null
+}
+
 Invoke-Tool 'close_document' @{ save = $false; close_all = $true } | Out-Null
 ""; $fail = @($script:results | Where-Object { -not $_.pass }).Count
 $h1 = (Sw).HandleCount; $m1 = [int]((Sw).PrivateMemorySize64 / 1MB)

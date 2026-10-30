@@ -155,7 +155,7 @@ namespace SolidworksExecution.Services
                     // Sheet-Metal feature's bend-allowance override (it also creates the D2@Sheet-Metal1 dimension an equation can drive), so apply it that way when it differs.
                     if (feature != null)
                     {
-                        try { if (!ApplyGlobalKFactor(modelDoc, kFactor)) ExecLog.Write($"base_flange: global K-factor {kFactor} could not be applied"); }
+                        try { if (!ApplyGlobalKFactor(modelDoc, kFactor, TopFeatures(modelDoc).LastOrDefault(sf => sf.GetTypeName2() == "SheetMetal"))) ExecLog.Write($"base_flange: global K-factor {kFactor} could not be applied"); }      // the NEW base flange's own Sheet-Metal feature (a second sheet-metal body has its own K, the template's 0.5)
                         catch (Exception kex) { ExecLog.Write($"base_flange: global K-factor {kFactor} failed: {kex.Message}"); }
                     }
                     baseFlangeDone:;
@@ -170,18 +170,53 @@ namespace SolidworksExecution.Services
                     // PositionType=1 = swFlangePositionTypeMaterialInside.
                     double flangeLength = p?.Value<double?>("flange_length") ?? 0.02;
                     double angleDeg = p?.Value<double?>("angle") ?? 90.0;
-                    double angleRad = angleDeg * Math.PI / 180.0;
+                    // HARD DEFAULT 90 (user rule 2026-10-29: the corrected case had a 4-edge flange at 89.0 degrees, an unintended artefact of reading pixels): an angle within 5 degrees of 90 is
+                    // snapped to exactly 90 and the reply says so; a user who really states such an angle passes angle_exact=true. 90 is pi/2 to the last bit.
+                    string angleNote = null;
+                    if (!(p?.Value<bool?>("angle_exact") ?? false) && angleDeg != 90.0 && Math.Abs(angleDeg - 90.0) <= 5.0)
+                    {
+                        angleNote = "angle " + angleDeg.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture) + " deg snapped to exactly 90 (DFM rule: bends default to 90; pass angle_exact=true when the user stated the angle)";
+                        ExecLog.Write("edge_flange: " + angleNote);
+                        angleDeg = 90.0;
+                    }
+                    double angleRad = angleDeg == 90.0 ? Math.PI / 2.0 : angleDeg * Math.PI / 180.0;
+                    // what the length is measured to: the OUTER virtual sharp (the user's standing convention: the flange length is the outer dimension) unless asked otherwise. Without this SolidWorks
+                    // reuses the last choice made in its UI (measured 2026-10-28: the inner virtual sharp, so a 3.875 in flange stood 3.925 in tall).
+                    int flangeSharp = FlangeSharpCode(p?.Value<string>("dimension_type"));
 
                     // Edge selection shares SelectFlangeEdge with the sketch/finish phases
                     // (v0.7.0): edge_index (from analyze_model(edges)) PREFERRED — the raw
                     // coordinate pick can miss a real edge (KNOWN-LIMITATIONS #6); ex/ey/ez
                     // stay the fallback. The IR's length-mode flange lowers to edge_index.
-                    var flangeEdge = SelectFlangeEdge(modelDoc, p,
-                        p?.Value<double?>("ex"), p?.Value<double?>("ey"), p?.Value<double?>("ez"),
-                        out string efSimpleEdgeErr);
-                    if (flangeEdge == null)
+                    // ONE FEATURE FOR ALL THE EDGES THAT SHARE PARAMETERS (user rule 2026-10-29: 'edgeflange5,6,7,8 should have been one feature'): edge_indices = [..] takes several edges, they are
+                    // flanged together (adjacent flanges mitre at the corner), one length / angle / radius for all. A single edge_index / ex,ey,ez works as before.
+                    var flangeEdges = new List<Edge>();
+                    string efSimpleEdgeErr = null;
+                    var edgeIdxList = p?["edge_indices"] as JArray;
+                    if (edgeIdxList != null && edgeIdxList.Count > 0)
+                    {
+                        var allEdges = FlattenEdges(modelDoc as IPartDoc);
+                        var seenEdges = new HashSet<int>();
+                        foreach (var tok in edgeIdxList)
+                        {
+                            int ei = (int)tok;
+                            if (ei < 0 || ei >= allEdges.Count) { efSimpleEdgeErr = $"edge_indices: {ei} out of range (part has {allEdges.Count} edges)."; break; }
+                            if (!seenEdges.Add(ei)) continue;
+                            var ee = allEdges[ei] as Edge;
+                            if (ee == null) { efSimpleEdgeErr = $"edge_indices: {ei} is not an edge."; break; }
+                            flangeEdges.Add(ee);
+                        }
+                    }
+                    else
+                    {
+                        var singleEdge = SelectFlangeEdge(modelDoc, p,
+                            p?.Value<double?>("ex"), p?.Value<double?>("ey"), p?.Value<double?>("ez"),
+                            out efSimpleEdgeErr);
+                        if (singleEdge != null) flangeEdges.Add(singleEdge);
+                    }
+                    if (efSimpleEdgeErr != null || flangeEdges.Count == 0)
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                            "EDGE_NOT_FOUND", efSimpleEdgeErr);
+                            "EDGE_NOT_FOUND", efSimpleEdgeErr ?? "no edge given: pass edge_index, edge_indices or ex/ey/ez.");
 
                     // Edge flange is a TWO-step API: (1) IModelDoc2.InsertSketchForEdgeFlange generates the
                     // default flange profile sketch on the selected edge, then (2) InsertSheetMetalEdgeFlange2
@@ -192,27 +227,42 @@ namespace SolidworksExecution.Services
                                        | swInsertEdgeFlangeOptions_e.swInsertEdgeFlangeUseReliefRatio
                                        | swInsertEdgeFlangeOptions_e.swInsertEdgeFlangeUseDefaultRelief);
 
-                    var efSketch = modelDoc.InsertSketchForEdgeFlange(flangeEdge, angleRad, false) as IFeature;
-                    ExecLog.Write($"edge_flange: InsertSketchForEdgeFlange -> {(efSketch == null ? "NULL" : efSketch.Name)}");
-                    // The profile sketch is left open/active — exit it before creating the flange feature.
-                    if (modelDoc.SketchManager.ActiveSketch != null)
-                        modelDoc.SketchManager.InsertSketch(true);
-
-                    if (efSketch != null)
+                    // one generated default profile sketch PER EDGE (each edge selected alone for the generator)
+                    var efSketches = new List<Feature>();
+                    foreach (var fe in flangeEdges)
                     {
-                        // Re-select the edge (sketch creation/exit can clear the selection list) —
-                        // via the entity OBJECT so it works for edge_index and coordinate callers alike.
                         modelDoc.ClearSelection2(true);
-                        (flangeEdge as IEntity)?.Select4(false, null);
+                        (fe as IEntity)?.Select4(false, null);
+                        var genSk = modelDoc.InsertSketchForEdgeFlange(fe, angleRad, false) as IFeature;
+                        ExecLog.Write($"edge_flange: InsertSketchForEdgeFlange (edge {efSketches.Count + 1}/{flangeEdges.Count}) -> {(genSk == null ? "NULL" : genSk.Name)}");
+                        // The profile sketch is left open/active — exit it before the next one / the flange feature.
+                        if (modelDoc.SketchManager.ActiveSketch != null)
+                            modelDoc.SketchManager.InsertSketch(true);
+                        if (genSk == null) break;
+                        efSketches.Add((Feature)genSk);
+                    }
 
+                    if (efSketches.Count == flangeEdges.Count)
+                    {
+                        // Re-select ALL the edges (sketch creation/exit clears the selection list), appending —
+                        // via the entity OBJECT so it works for edge_index, edge_indices and coordinate callers alike.
+                        modelDoc.ClearSelection2(true);
+                        bool firstSel = true;
+                        foreach (var fe in flangeEdges) { (fe as IEntity)?.Select4(!firstSel, null); firstSel = false; }
+
+                        // InsertSheetMetalEdgeFlange2 with SEVERAL edges + their sketches returns null (measured 2026-10-29, 4 plate edges, every option set tried), and so does CreateDefinition + AddEdges +
+                        // CreateFeature. What works - and is what the UI ends up with (4 profile sketches + 4 bends under one feature): the flange on the FIRST edge, then AddEdges(rest, their sketches)
+                        // in an AccessSelections session of ITS definition, with the corner settings of the corrected case's Edge-Flange5 (gap 0.0762 mm, custom relief ratio 1).
+                        int nEdges = flangeEdges.Count;
+                        bool multiEdge = nEdges > 1;
                         feature = featureMgr.InsertSheetMetalEdgeFlange2(
-                            new Edge[] { flangeEdge }, new Feature[] { (Feature)efSketch },
+                            new Edge[] { flangeEdges[0] }, new Feature[] { efSketches[0] },
                             boolOpts, angleRad, 0.0,
                             (int)swFlangePositionTypes_e.swFlangePositionTypeMaterialInside,
                             flangeLength,
                             (int)swSheetMetalReliefTypes_e.swSheetMetalReliefRectangular,
-                            0.5, 0.001, 0.001, 0, null) as IFeature;
-                        ExecLog.Write($"edge_flange: InsertSheetMetalEdgeFlange2 -> {(feature == null ? "NULL" : feature.Name)}");
+                            0.5, 0.001, 0.001, flangeSharp, null) as IFeature;
+                        ExecLog.Write($"edge_flange: InsertSheetMetalEdgeFlange2 (edge 1 of {nEdges}) -> {(feature == null ? "NULL" : feature.Name)}");
 
                         // The flange length comes from the auto-generated profile sketch (a small default),
                         // NOT from FlangeOffsetDist when a sketch is supplied. Force the requested length by
@@ -226,13 +276,56 @@ namespace SolidworksExecution.Services
                                 bool acc = efDef.AccessSelections(modelDoc, null);
                                 ExecLog.Write($"edge_flange: pre-modify OffsetType={efDef.OffsetType} OffsetDistance={efDef.OffsetDistance} acc={acc}");
                                 efDef.OffsetDistance = flangeLength;
+                                efDef.OffsetDimType = flangeSharp;
+                                try { if (Math.Abs(efDef.BendAngle - angleRad) > 1e-12) efDef.BendAngle = angleRad; } catch (Exception bex) { ExecLog.Write("edge_flange: BendAngle set failed: " + bex.Message); }
+                                if (multiEdge)
+                                {
+                                    // tight (closed) corners between neighbouring flanges: the default 1 mm gap makes ModifyDefinition refuse the multi-edge definition; `gap` overrides the 0.003 in (the user's value)
+                                    efDef.GapDistance = p?.Value<double?>("gap") ?? 0.0000762;
+                                    efDef.UseDefaultBendRelief = false; efDef.UseReliefRatio = true; efDef.ReliefRatio = 1.0;
+                                    int added = efDef.AddEdges(flangeEdges.GetRange(1, nEdges - 1).ToArray(), efSketches.GetRange(1, nEdges - 1).ToArray());
+                                    ExecLog.Write($"edge_flange: AddEdges({nEdges - 1}) -> {added}, the definition holds {efDef.GetEdgeCount()} edges, gap {efDef.GapDistance}");
+                                }
                                 bool mod = feature.ModifyDefinition(efDef, modelDoc, null);
-                                ExecLog.Write($"edge_flange: ModifyDefinition len={flangeLength} -> mod={mod}");
+                                ExecLog.Write($"edge_flange: ModifyDefinition len={flangeLength} dimType={flangeSharp} angle={angleRad} -> mod={mod}");
+                                if (multiEdge && !mod)
+                                {
+                                    // leave the part as it was: no half-made one-edge flange, no orphan profile sketches
+                                    string failedName = feature.Name;
+                                    DeleteFeatureQuietly(modelDoc, failedName);
+                                    foreach (var osk in efSketches) DeleteFeatureQuietly(modelDoc, osk.Name);
+                                    modelDoc.EditRebuild3();
+                                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "MULTI_EDGE_FLANGE_FAILED",
+                                        $"SolidWorks refused to add the other {nEdges - 1} edge(s) to {failedName} (ModifyDefinition false); the part is unchanged. Check that the edges are sheet-metal edges that can take a flange together.");
+                                }
+                                // ModifyDefinition answers true when SolidWorks ignored a value: read the definition back and report what it kept
+                                try
+                                {
+                                    var kept = feature.GetDefinition() as IEdgeFlangeFeatureData;
+                                    if (kept != null)
+                                    {
+                                        bool lenOk = Math.Abs(kept.OffsetDistance - flangeLength) < 1e-7, sharpOk = kept.OffsetDimType == flangeSharp, angOk = Math.Abs(kept.BendAngle - angleRad) < 1e-9;
+                                        int keptEdges = 0; try { keptEdges = kept.GetEdgeCount(); } catch { }
+                                        gaugeInfo = new JObject { ["feature"] = feature.Name, ["length"] = kept.OffsetDistance, ["dimension_type"] = FlangeSharpName(kept.OffsetDimType), ["angle_deg"] = Math.Round(kept.BendAngle * 180.0 / Math.PI, 6), ["edges"] = keptEdges, ["verified"] = lenOk && sharpOk && angOk && keptEdges == flangeEdges.Count };
+                                        if (angleNote != null) gaugeInfo["angle_note"] = angleNote;
+                                        var probs = new JArray();
+                                        if (!lenOk || !sharpOk) probs.Add("SolidWorks kept length " + kept.OffsetDistance + " m and dimension type " + FlangeSharpName(kept.OffsetDimType) + " (asked " + flangeLength + " m, " + FlangeSharpName(flangeSharp) + ")");
+                                        if (!angOk) probs.Add("SolidWorks kept bend angle " + Math.Round(kept.BendAngle * 180.0 / Math.PI, 6) + " deg (asked " + angleDeg + ")");
+                                        if (keptEdges != flangeEdges.Count) probs.Add("the feature holds " + keptEdges + " edge(s), asked " + flangeEdges.Count);
+                                        if (probs.Count > 0) gaugeInfo["problems"] = probs;
+                                    }
+                                }
+                                catch (Exception rex) { ExecLog.Write("edge_flange: read-back failed: " + rex.Message); }
                             }
                         }
 
                         // Commit the geometry so analyze_model/verify_state read the rebuilt body.
                         modelDoc.EditRebuild3();
+                    }
+                    if (feature == null)
+                    {
+                        // creation failed: take the generated profile sketches out again (they would stay behind as loose sketches)
+                        foreach (var osk in efSketches) DeleteFeatureQuietly(modelDoc, osk.Name);
                     }
                 }
                 else if (featureType == "edge_flange_sketch")
@@ -362,7 +455,7 @@ namespace SolidworksExecution.Services
                         new Edge[] { efEdge2 }, new Feature[] { (Feature)profFeat },
                         efOpts, efAngleDeg * Math.PI / 180.0, efRadius, efPos, 0.0,
                         (int)swSheetMetalReliefTypes_e.swSheetMetalReliefRectangular,
-                        0.5, 0.001, 0.001, 0, null) as IFeature;
+                        0.5, 0.001, 0.001, FlangeSharpCode(p?.Value<string>("dimension_type")), null) as IFeature;
                     ExecLog.Write($"edge_flange_finish: InsertSheetMetalEdgeFlange2 sketch={profFeat.Name} pos={efPos} defRad={efUseDefaultRadius} -> {(feature == null ? "NULL" : feature.Name)}");
                     if (feature != null)
                         modelDoc.EditRebuild3();
@@ -533,6 +626,18 @@ namespace SolidworksExecution.Services
                     "UNEXPECTED_ERROR", ex.Message);
             }
         }
+
+        // swFlangeDimTypes_e for the edge flange's length measure: 1 outer virtual sharp (default), 2 inner virtual sharp, 3 bend tangent arc
+        private static int FlangeSharpCode(string name)
+        {
+            switch ((name ?? "outer").Trim().ToLowerInvariant())
+            {
+                case "inner": return (int)swFlangeDimTypes_e.swFlangeDimTypeInnerVirtualSharp;
+                case "tangent": return (int)swFlangeDimTypes_e.swFlangeDimTypeBendTangentArc;
+                default: return (int)swFlangeDimTypes_e.swFlangeDimTypeOuterVirtualSharp;
+            }
+        }
+        private static string FlangeSharpName(int code) { return code == 1 ? "outer" : code == 2 ? "inner" : code == 3 ? "tangent" : "code " + code; }
 
         // Attach-edge selection for the edge-flange ops. Priority: edge_index (robust — matches
         // analyze_model(edges)'s stable `i`, the same FlattenEdges enumeration; bypasses the

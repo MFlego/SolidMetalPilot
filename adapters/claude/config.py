@@ -30,7 +30,7 @@ CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "10"))
 # --- where the tools run ------------------------------------------------------------------------
 # "inproc" (default): INSIDE SolidWorks. The SolidPilot Bridge add-in serves EXECUTION_BASE_URL from within the SolidWorks process, so there is no server for the adapter to spawn - only
 # SolidWorks to start (ensure_ready does that). The out-of-process exe is not used: on SolidWorks 2026 SP4.0 it crashed SolidWorks twice on a plain new-part sketch sequence that the in-process
-# host ran cleanly 20 times (SolidPilotBridge/DESIGN-NOTES.txt).
+# host ran cleanly 20 times.
 # "exe": the legacy out-of-process SolidworksExecution.exe, spawned on demand (settings below). Fallback only.
 EXECUTION_MODE = os.getenv("EXECUTION_MODE", "inproc").strip().lower()
 # inproc + ensure_ready: start SolidWorks when it is closed. SOLIDWORKS_EXE overrides the discovery (the COM registration of SldWorks.Application); EXECUTION_LAUNCH_SOLIDWORKS=0 forbids it.

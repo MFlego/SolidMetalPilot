@@ -1,6 +1,6 @@
 // Typed-control tools: read and write the FULL definition of any feature through its *FeatureData interface (with write-verify), plus the sheet-metal operations that are a SEQUENCE of API calls
 // (global K-factor / bend allowance / auto-relief overrides, Closed Corners, flat-pattern control + direct flat DXF). Everything here is plain typed SolidWorks API, so the same code runs in both
-// hosts; it was found and proven by the in-process probes in SolidPilotBridge/probes (30-38), see SolidPilotBridge/SHEETMETAL-FINDINGS.txt for the evidence behind every call.
+// hosts; it was found and proven by the in-process probes in SolidPilotBridge/probes (30-38).
 // Lengths are METERS and angles RADIANS, exactly like the API (and like the other tools).
 using System;
 using System.Collections.Generic;
@@ -417,9 +417,18 @@ namespace SolidworksExecution.Services
             return items;
         }
 
-        private JObject SheetMetalSummary(IModelDoc2 doc)
+        // the Sheet-Metal feature called `name`, or the first one: a part with several base flanges (several sheet-metal bodies) has ONE Sheet-Metal feature per body, each with its own K-factor / thickness / radius
+        private IFeature SheetMetalFeature(IModelDoc2 doc, string name)
         {
-            var o = new JObject(); var sm = FirstOfType(doc, "SheetMetal");
+            if (string.IsNullOrEmpty(name)) return FirstOfType(doc, "SheetMetal");
+            var f = TopFeatures(doc).FirstOrDefault(x => x.GetTypeName2() == "SheetMetal" && x.Name == name);
+            if (f == null) throw new ToolFailure("FEATURE_NOT_FOUND", "No Sheet-Metal feature named '" + name + "' (the part has: " + string.Join(", ", TopFeatures(doc).Where(x => x.GetTypeName2() == "SheetMetal").Select(x => x.Name)) + ").");
+            return f;
+        }
+
+        private JObject SheetMetalSummary(IModelDoc2 doc, string featureName = null)
+        {
+            var o = new JObject(); var sm = SheetMetalFeature(doc, featureName);
             if (sm == null) { o["sheet_metal"] = false; return o; }
             o["sheet_metal"] = true; o["units"] = ReadUnits(doc);           // the cut-list values below are in THIS length unit (everything else here is meters)
             var d = (ISheetMetalFeatureData)sm.GetDefinition(); bool acc = d.AccessSelections(doc, null);
@@ -432,6 +441,16 @@ namespace SolidworksExecution.Services
                 o["global"] = g;
             }
             finally { if (acc) d.ReleaseSelectionAccess(); }
+
+            // every Sheet-Metal feature of the part (one per sheet-metal body): the 'global' block above is the one asked for (default: the first)
+            var all = new JArray();
+            foreach (var f in TopFeatures(doc).Where(x => x.GetTypeName2() == "SheetMetal"))
+            {
+                var fd = (ISheetMetalFeatureData)f.GetDefinition(); bool facc = fd.AccessSelections(doc, null);
+                try { all.Add(new JObject { ["feature"] = f.Name, ["thickness"] = fd.Thickness, ["bend_radius"] = fd.BendRadius, ["k_factor"] = fd.KFactor, ["bend_allowance_type"] = fd.BendAllowanceType }); }
+                finally { if (facc) fd.ReleaseSelectionAccess(); }
+            }
+            if (all.Count > 1) o["sheet_metal_features"] = all;
 
             var bf = FirstOfType(doc, "SMBaseFlange");
             if (bf != null) { var b = (IBaseFlangeFeatureData)bf.GetDefinition(); o["base_flange"] = new JObject { ["feature"] = bf.Name, ["thickness"] = b.Thickness, ["bend_radius"] = b.BendRadius, ["override_thickness"] = b.OverrideThickness, ["override_radius"] = b.OverrideRadius, ["use_gauge_table"] = b.UseGaugeTable, ["gauge_table"] = b.GaugeTablePath }; }
@@ -465,10 +484,13 @@ namespace SolidworksExecution.Services
             {
                 if (!(doc is IPartDoc)) throw new ToolFailure("WRONG_DOCUMENT_TYPE", "sheet_metal_params needs an active part.");
                 if (FirstOfType(doc, "SheetMetal") == null) throw new ToolFailure("NOT_SHEET_METAL", "The active part has no Sheet-Metal feature.");
-                if (action == "get") return SheetMetalSummary(doc);
+                string smName = p.Value<string>("feature");                    // which Sheet-Metal feature (= which sheet-metal body); default the first
+                if (action == "get") return SheetMetalSummary(doc, smName);
                 if (action != "set") throw new ToolFailure("INVALID_PARAMETER", "action must be get or set.");
 
-                var done = new JArray(); var sm = FirstOfType(doc, "SheetMetal");
+                if (!string.IsNullOrEmpty(smName) && (p["thickness"] != null || p["bend_radius"] != null))
+                    throw new ToolFailure("INVALID_PARAMETER", "thickness / bend_radius are overrides of a BASE FLANGE and this tool edits the first one: for another sheet-metal body use feature_data on its Base-Flange feature ('Base-Flange2' ...). Nothing was changed.");
+                var done = new JArray(); var sm = SheetMetalFeature(doc, smName);
                 // 1. global bend allowance (K-factor / direct / deduction) and auto relief - the override sequence, NOT the plain properties (those are silently ignored)
                 double? k = p.Value<double?>("k_factor"); string baType = p.Value<string>("bend_allowance_type"); double? baVal = p.Value<double?>("bend_allowance"); double? bdVal = p.Value<double?>("bend_deduction");
                 string relief = p.Value<string>("auto_relief"); double? reliefRatio = p.Value<double?>("relief_ratio"); var reset = AsArray(p["reset_overrides"], "reset_overrides");
@@ -553,7 +575,7 @@ namespace SolidworksExecution.Services
                 if (done.Count == 0) throw new ToolFailure("MISSING_PARAMETER", "Nothing to set: give k_factor / bend_allowance_type + bend_allowance / bend_deduction, auto_relief (+ relief_ratio), thickness and/or bend_radius.");
 
                 // 3. verify against what the API now holds
-                var summary = SheetMetalSummary(doc); bool ok = true; var problems = new JArray(); var notes = new JArray();
+                var summary = SheetMetalSummary(doc, smName); bool ok = true; var problems = new JArray(); var notes = new JArray();
                 var glob = summary["global"] as JObject; var cb = glob == null ? null : glob["bend_allowance"] as JObject;
                 if (k.HasValue && (cb == null || Math.Abs(cb.Value<double>("k_factor") - k.Value) > 1e-9)) { ok = false; problems.Add("k_factor did not take effect"); }
                 if (relief != null && glob != null && glob.Value<int>("auto_relief_type") != (relief.ToLowerInvariant() == "tear" ? 3 : relief.ToLowerInvariant() == "obround" ? 2 : 1)) { ok = false; problems.Add("auto_relief did not take effect"); }
@@ -584,9 +606,9 @@ namespace SolidworksExecution.Services
 
         // The global K-factor, set the only way that takes effect (bend-allowance override + custom allowance on the Sheet-Metal feature). True when the part now reads that K.
         // Does nothing (returns true) when the part already has that K-factor, e.g. the template default.
-        private bool ApplyGlobalKFactor(IModelDoc2 doc, double k)
+        private bool ApplyGlobalKFactor(IModelDoc2 doc, double k, IFeature smFeature = null)
         {
-            var sm = FirstOfType(doc, "SheetMetal"); if (sm == null) return false;
+            var sm = smFeature ?? FirstOfType(doc, "SheetMetal"); if (sm == null) return false;
             var d = (ISheetMetalFeatureData)sm.GetDefinition(); bool acc = d.AccessSelections(doc, null);
             try
             {
@@ -659,7 +681,14 @@ namespace SolidworksExecution.Services
             var bodies = (doc as IPartDoc)?.GetBodies2((int)swBodyType_e.swSolidBody, false) as object[]; var o = new JObject();
             if (bodies == null || bodies.Length == 0) return o;
             var b = (IBody2)bodies[0]; var x = (double[])b.GetBodyBox();
-            o["size"] = new JArray(x[3] - x[0], x[4] - x[1], x[5] - x[2]); o["faces"] = b.GetFaceCount(); o["edges"] = b.GetEdgeCount(); return o;
+            o["size"] = new JArray(x[3] - x[0], x[4] - x[1], x[5] - x[2]); o["faces"] = b.GetFaceCount(); o["edges"] = b.GetEdgeCount();
+            if (bodies.Length > 1)       // several sheet-metal bodies: every body's box (the order of the bodies is SolidWorks' own and can change between calls, so the name is given)
+            {
+                var all = new JArray();
+                foreach (var bo in bodies) { var bb = (IBody2)bo; var bx = (double[])bb.GetBodyBox(); all.Add(new JObject { ["name"] = bb.Name, ["size"] = new JArray(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]), ["faces"] = bb.GetFaceCount() }); }
+                o["bodies"] = all;
+            }
+            return o;
         }
 
         public ExecutionResponse FlatPatternControl(ToolRequest request)
@@ -668,8 +697,18 @@ namespace SolidworksExecution.Services
             {
                 var part = doc as IPartDoc; if (part == null) throw new ToolFailure("WRONG_DOCUMENT_TYPE", "flat_pattern_control needs an active part.");
                 var fp = FirstOfType(doc, "FlatPattern"); if (fp == null) throw new ToolFailure("NOT_SHEET_METAL", "The active part has no Flat-Pattern feature.");
+                // a part with several sheet-metal bodies has ONE Flat-Pattern feature per body (Flat-Pattern1, Flat-Pattern13 ...): `feature` picks it, so each body gets its own blank and its own DXF
+                var flatNames = TopFeatures(doc).Where(f => f.GetTypeName2() == "FlatPattern").Select(f => f.Name).ToList();
+                string fpName = p.Value<string>("feature");
+                if (!string.IsNullOrEmpty(fpName))
+                {
+                    fp = TopFeatures(doc).FirstOrDefault(f => f.GetTypeName2() == "FlatPattern" && f.Name == fpName);
+                    if (fp == null) throw new ToolFailure("FEATURE_NOT_FOUND", "No Flat-Pattern feature named '" + fpName + "' (the part has: " + string.Join(", ", flatNames) + ").");
+                }
                 bool wasSuppressed = fp.IsSuppressed(); bool leaveFlat = p.Value<bool?>("leave_flat") ?? false;
-                var res = new JObject { ["folded"] = BodyStats(doc) };
+                var restoreSuppressed = new List<string>();          // the other bodies' flat patterns unsuppressed for a multi-body DXF export: suppressed again afterwards
+                var res = new JObject { ["folded"] = BodyStats(doc), ["flat_pattern"] = fp.Name };
+                if (flatNames.Count > 1) res["flat_patterns"] = new JArray(flatNames);
                 fp.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); doc.EditRebuild3();
                 try
                 {
@@ -701,18 +740,42 @@ namespace SolidworksExecution.Services
                         string model = doc.GetPathName();
                         if (string.IsNullOrEmpty(model)) throw new ToolFailure("SAVE_REQUIRED", "The DXF export needs the part's file path: save the part first (save_document).");
                         int flags = p.Value<int?>("dxf_flags") ?? 5;     // 1 = outline, 4 = bend lines, 5 = both
-                        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dxf))); if (File.Exists(dxf)) File.Delete(dxf);
-                        bool ok = part.ExportToDWG2(dxf, model, 1, true, null, false, false, flags, null);
-                        bool exists = File.Exists(dxf);
-                        res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = ok && exists, ["bytes"] = exists ? new FileInfo(dxf).Length : 0 };
-                        if (!(ok && exists)) verified = false;
+                        string dir = Path.GetDirectoryName(Path.GetFullPath(dxf)); string stem = Path.GetFileNameWithoutExtension(dxf);
+                        Directory.CreateDirectory(dir); if (File.Exists(dxf)) File.Delete(dxf);
+                        if (flatNames.Count <= 1)
+                        {
+                            bool ok = part.ExportToDWG2(dxf, model, 1, true, null, false, false, flags, null);
+                            bool exists = File.Exists(dxf);
+                            res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = ok && exists, ["bytes"] = exists ? new FileInfo(dxf).Length : 0 };
+                            if (!(ok && exists)) verified = false;
+                        }
+                        else
+                        {
+                            // SEVERAL sheet-metal bodies: a single-file export writes only the FIRST body's flat (measured 2026-10-28: the second DXF was the first body's again, whichever flat pattern was active).
+                            // With every flat pattern unsuppressed and ExportToSingleFile = false SolidWorks writes ONE FILE PER BODY, named "<Flat-Pattern feature> - <stem>.dxf".
+                            foreach (var f2 in TopFeatures(doc).Where(f => f.GetTypeName2() == "FlatPattern" && f.IsSuppressed())) { f2.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); restoreSuppressed.Add(f2.Name); }
+                            doc.EditRebuild3();
+                            var before = new HashSet<string>(Directory.GetFiles(dir, "* - " + stem + ".dxf"));
+                            foreach (var old in before) File.Delete(old);
+                            bool ok = part.ExportToDWG2(dxf, model, 1, false, null, false, false, flags, null);
+                            var written = new JArray();
+                            foreach (var fn in flatNames) { string fpath = Path.Combine(dir, fn + " - " + stem + ".dxf"); if (File.Exists(fpath)) written.Add(new JObject { ["flat_pattern"] = fn, ["path"] = fpath, ["bytes"] = new FileInfo(fpath).Length }); }
+                            res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = ok && written.Count == flatNames.Count, ["files"] = written };
+                            if (!(ok && written.Count == flatNames.Count)) verified = false;
+                        }
                     }
                     res["verified"] = verified;
                 }
                 finally
                 {
                     // the model is folded again unless the caller asked to leave it flat - whatever state it was in when we started, and also after a failure above
-                    if (!leaveFlat) { fp.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); doc.EditRebuild3(); }
+                    foreach (var rn in restoreSuppressed)
+                    {
+                        var rf = TopFeatures(doc).FirstOrDefault(f => f.Name == rn && f.GetTypeName2() == "FlatPattern");
+                        if (rf != null && (rf.Name != fp.Name || !leaveFlat)) rf.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null);
+                    }
+                    if (!leaveFlat) { fp.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); }
+                    if (restoreSuppressed.Count > 0 || !leaveFlat) doc.EditRebuild3();
                     res["flat_pattern_was"] = wasSuppressed ? "suppressed" : "active";
                     res["flat_pattern_left"] = leaveFlat ? "active" : "suppressed";
                 }

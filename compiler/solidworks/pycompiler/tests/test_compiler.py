@@ -1370,6 +1370,104 @@ def test_edge_flange_length_mode_single_call():
     assert "ex" not in ef
 
 
+def test_edge_flange_multi_edge_is_one_call():
+    # user rule (Phase 7 post-mortem): flanges that share parameters are ONE feature -> `edges` lowers
+    # to ONE sheet_metal_feature call with edge_indices (never one call per edge); angle_exact and gap
+    # pass through only when given
+    g = {
+        "schema_version": "0.8.0-draft", "units": "meters",
+        "nodes": [
+            {"id": "s1", "type": "sketch", "ref": {"datum": "top"},
+             "profile": [{"kind": "rectangle", "width": 0.1, "height": 0.06}]},
+            {"id": "sm1", "type": "sheet_metal", "sketch": "s1", "thickness": 0.002},
+            {"id": "ef1", "type": "edge_flange",
+             "edges": [{"near": [0.0, 0.0, 0.0]}, {"near": [-0.208219, 0.236714, -0.15089]}],
+             "length": 0.0127},
+        ],
+    }
+    port = FakePort(edges=_EF_EDGES)
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    assert _tools(port).count("sheet_metal_feature") == 2        # the base flange + ONE multi-edge flange
+    ef = port.calls[-1][1]
+    assert ef["feature_type"] == "edge_flange" and ef["edge_indices"] == [3, 170]
+    assert "edge_index" not in ef and "angle_exact" not in ef and "gap" not in ef
+    assert abs(ef["angle"] - 90.0) < 1e-12                        # the hard default
+    g["nodes"][2].update({"angle_exact": True, "gap": 0.0001})
+    port = FakePort(edges=_EF_EDGES)
+    assert compile_and_run(port, g).status == "COMPLETED"
+    ef = port.calls[-1][1]
+    assert ef["angle_exact"] is True and ef["gap"] == 0.0001
+
+
+def test_edge_flange_multi_edge_validation():
+    base = [{"id": "s1", "type": "sketch", "ref": {"datum": "top"},
+             "profile": [{"kind": "rectangle", "width": 0.1, "height": 0.06}]},
+            {"id": "sm1", "type": "sheet_metal", "sketch": "s1", "thickness": 0.002}]
+    two = [{"near": [0, 0, 0]}, {"near": [0.1, 0, 0]}]
+    bads = [
+        base + [{"id": "ef1", "type": "edge_flange", "edge": {"near": [0, 0, 0]}, "edges": two, "length": 0.02}],
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two[:1], "length": 0.02}],
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two}],                                   # no length
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "length": 0.02, "angle_exact": "yes"}],
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "length": 0.02, "gap": 0}],
+    ]
+    for nodes in bads:
+        port = FakePort()
+        r = compile_and_run(port, {"schema_version": "0.8.0-draft", "units": "meters", "nodes": nodes})
+        assert r.status == "FAILED" and r.error["code"] == "VALIDATION_FAILED", r.to_dict()
+        assert port.calls == []
+
+
+def test_fully_define_sketches_opt_in():
+    # user rule (Phase 7 post-mortem): every sketch fully defined, even hole sketches. Opt-in per graph
+    # (`fully_define_sketches`) or per node (`fully_define`, wins over the graph); a sketch node gets ONE
+    # strict sketch_fully_define after its entities; the default stays off (a replay keeps its sketches)
+    base = {"schema_version": "0.8.0-draft", "units": "meters",
+            "nodes": [{"id": "s1", "type": "sketch", "ref": {"datum": "top"},
+                       "profile": [{"kind": "circle", "cx": 0.01, "cy": 0.0, "diameter": 0.004}]}]}
+    port = FakePort(); assert compile_and_run(port, base).status == "COMPLETED"
+    assert "sketch_fully_define" not in _tools(port)
+    g = dict(base, fully_define_sketches=True)
+    port = FakePort(); r = compile_and_run(port, g); assert r.status == "COMPLETED", r.to_dict()
+    assert _tools(port) == ["create_sketch", "add_sketch_entity", "sketch_fully_define"]
+    g = dict(base, fully_define_sketches=True, nodes=[dict(base["nodes"][0], fully_define=False)])
+    port = FakePort(); assert compile_and_run(port, g).status == "COMPLETED"
+    assert "sketch_fully_define" not in _tools(port)                       # the node overrides the graph
+    g = dict(base, nodes=[dict(base["nodes"][0], fully_define=True)])
+    port = FakePort(); assert compile_and_run(port, g).status == "COMPLETED"
+    assert _tools(port)[-1] == "sketch_fully_define"
+    for bad in (dict(base, fully_define_sketches="yes"), dict(base, nodes=[dict(base["nodes"][0], fully_define="yes")])):
+        port = FakePort(); r = compile_and_run(port, bad)
+        assert r.status == "FAILED" and r.error["code"] == "VALIDATION_FAILED" and port.calls == []
+
+
+def test_sketch_from_edges_master_driven():
+    # user rule: master sketches come from the surface construction. `from_edges` = anchors of the MASTER
+    # body's edges: they lower as POINTS ON the edges to ONE strict
+    # sketch_convert_entities right after create_sketch; `profile` is then optional
+    g = {"schema_version": "0.8.0-draft", "units": "meters",
+         "nodes": [{"id": "s2", "type": "sketch", "ref": {"datum": "front"},
+                    "from_edges": [{"near": [0.0, 0.0, 0.0]}, {"near": [-0.208219, 0.236714, -0.15089]}]}]}
+    port = FakePort(edges=_EF_EDGES)
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    assert _tools(port) == ["create_sketch", "sketch_convert_entities"]
+    conv = port.calls[-1][1]
+    assert conv["points"] == [[0.0, 0.0, 0.0], [-0.208219, 0.236714, -0.15089]]       # points ON the master edges (a surface has no edge indices)
+    # a profile may still add entities after the conversion; an empty node is still refused
+    g["nodes"][0]["profile"] = [{"kind": "circle", "cx": 0.0, "cy": 0.0, "diameter": 0.004}]
+    port = FakePort(edges=_EF_EDGES)
+    assert compile_and_run(port, g).status == "COMPLETED"
+    assert _tools(port) == ["create_sketch", "sketch_convert_entities", "add_sketch_entity"]
+    for bad in ({"id": "s2", "type": "sketch", "ref": {"datum": "front"}},
+                {"id": "s2", "type": "sketch", "ref": {"datum": "front"}, "from_edges": []},
+                {"id": "s2", "type": "sketch", "ref": {"datum": "front"}, "from_edges": [{"near": "x"}]}):
+        port = FakePort()
+        r = compile_and_run(port, {"schema_version": "0.8.0-draft", "units": "meters", "nodes": [bad]})
+        assert r.status == "FAILED" and r.error["code"] == "VALIDATION_FAILED" and port.calls == []
+
+
 def test_edge_flange_length_mode_validation():
     # length XOR frame/profile; no position/radius/flip overrides in length mode; length > 0.
     ident = {"origin": [0, 0, 0], "xdir": [1, 0, 0], "ydir": [0, 1, 0]}

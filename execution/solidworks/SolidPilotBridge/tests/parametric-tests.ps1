@@ -103,6 +103,76 @@ Test 'P03b a rectangle in a part that ALREADY HAS geometry is exactly the size a
     $z2 = SketchSize $s.sketch; Near $z2[0] 0.25 1e-6 'the width follows its equation'; Near $z2[1] 0.45 1e-6 'the height stays'
 }
 
+Test 'P03c sketch_center_rectangle with an OFF-ORIGIN centre (center_x / center_y): fully defined by one more driving dimension per offset (a base 0.040 in off-centre under a cover, Phase 7), the offsets drive' {
+    Fresh-Part
+    # Y offset only: D3 = the offset, the centre on the Y axis by a relation (sgVERTPOINTS2D)
+    $a = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.256286; height = 0.144018; center_y = -0.001016 }) 'y offset')
+    Assert ($a.constrained -eq 'fully_defined' -and $a.verified -eq $true) "y offset: $($a | ConvertTo-Json -Compress)"; Assert (($a.dimensions -join ',') -eq 'D1@Sketch1,D2@Sketch1,D3@Sketch1') "dimension names: $($a.dimensions -join ',')"
+    Near $a.size[0] 0.256286 1e-6 'width'; Near $a.size[1] 0.144018 1e-6 'height'
+    $sg = (Invoke-Tool 'analyze_model' @{ analysis_type = 'sketch'; name = 'Sketch1' }).cadState.features[0] | ConvertFrom-Json
+    $ys = @($sg.sketch.segments | Where-Object { -not $_.construction } | ForEach-Object { $_.y1; $_.y2 }); $xs = @($sg.sketch.segments | Where-Object { -not $_.construction } | ForEach-Object { $_.x1; $_.x2 })
+    Near (($ys | Measure-Object -Minimum).Minimum) (-0.001016 - 0.072009) 1e-7 'bottom edge'; Near (($ys | Measure-Object -Maximum).Maximum) (-0.001016 + 0.072009) 1e-7 'top edge'; Near (($xs | Measure-Object -Maximum).Maximum + ($xs | Measure-Object -Minimum).Minimum) 0 1e-9 'symmetric about the Y axis'
+    # D3 DRIVES the offset
+    Ok (Eq 'set' @{ variables = '{"Off":"0.5in"}'; links = '{"D3@Sketch1":"Off"}' }) 'drive D3' | Out-Null
+    $sg2 = (Invoke-Tool 'analyze_model' @{ analysis_type = 'sketch'; name = 'Sketch1' }).cadState.features[0] | ConvertFrom-Json
+    $ys2 = @($sg2.sketch.segments | Where-Object { -not $_.construction } | ForEach-Object { $_.y1; $_.y2 }); Near ((($ys2 | Measure-Object -Maximum).Maximum + ($ys2 | Measure-Object -Minimum).Minimum) / 2) (-0.0127) 1e-7 'the centre follows D3 (0.5 in below the origin)'
+    # both offsets, X only, and the plain centre rectangle is unchanged
+    Fresh-Part; $b = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.10; height = 0.06; center_x = 0.02; center_y = -0.01 }) 'both offsets')
+    Assert ($b.constrained -eq 'fully_defined' -and $b.verified -eq $true -and ($b.dimensions -join ',') -eq 'D1@Sketch1,D2@Sketch1,D3@Sketch1,D4@Sketch1') "both offsets: $($b | ConvertTo-Json -Compress)"
+    Fresh-Part; $c = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.10; height = 0.06; center_x = 0.02 }) 'x offset only')
+    Assert ($c.constrained -eq 'fully_defined' -and $c.verified -eq $true -and ($c.dimensions -join ',') -eq 'D1@Sketch1,D2@Sketch1,D3@Sketch1') "x offset: $($c | ConvertTo-Json -Compress)"
+    Fresh-Part; $d = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.10; height = 0.06 }) 'no offset'); Assert ($d.constrained -eq 'fully_defined' -and ($d.dimensions -join ',') -eq 'D1@Sketch1,D2@Sketch1' -and -not $d.center) "unchanged default: $($d | ConvertTo-Json -Compress)"
+    # the offset body feeds a base flange: the two-body part of Phase 7 (cover over a base that is 0.040 in off-centre)
+    Fresh-Part; Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.256286; height = 0.14605; center_y = -0.001016 }) 'plate sketch' | Out-Null
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.00127; bend_radius = 0.001905; k_factor = 0.46 }) 'base flange' | Out-Null
+    $bx = (Rg (Ok (Invoke-Tool 'flat_pattern_control' @{}) 'flat')).folded.size; Near $bx[0] 0.256286 1e-6 'plate X'; Near $bx[1] 0.14605 1e-6 'plate Y'
+}
+
+Test 'P03d sketch_fully_define (user rule: EVERY sketch fully defined, even hole sketches): an off-origin rectangle + circles, a polyline, a profile with an arc, circles ON the axes and a corner on the origin all end at status 3 (dimensions to the origin, redundant ones deleted, relations for points on an axis); an already defined sketch is a no-op; errors' {
+    function DefineSketch($segs) {
+        Fresh-Part; Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'sketch' | Out-Null
+        Ok (Invoke-Tool 'add_sketch_entities' @{ segments = $segs }) 'entities' | Out-Null
+        $r = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{}) 'sketch_fully_define'); Assert ($r.status_before -eq 'under_defined') "before: $($r.status_before)"
+        Assert ($r.constrained -eq 'fully_defined' -and $r.verified -eq $true -and $r.constrained_status -eq 3) "not fully defined: $($r | ConvertTo-Json -Compress -Depth 5)"; $r
+    }
+    $r = DefineSketch @(@{ entity_type = 'rectangle'; x1 = -0.05; y1 = -0.03; x2 = 0.05; y2 = 0.03 }, @{ entity_type = 'circle'; cx = -0.02; cy = 0.01; radius = 0.004 }, @{ entity_type = 'circle'; cx = 0.025; cy = -0.012; radius = 0.003 })
+    Assert (@($r.dimensions).Count -eq 10) "off-origin rectangle + two circles = 10 dimensions: $(@($r.dimensions).Count)"; Assert ($r.redundant_dimensions_removed -ge 1) 'a redundant (driven) dimension must have been removed again'
+    $vals = @($r.dimensions | ForEach-Object { [math]::Round($_.value * 1000, 3) }); Assert (($vals -contains 8) -and ($vals -contains 6)) "the two circle diameters 8 and 6 mm are among the dimensions: $($vals -join ',')"
+    $r = DefineSketch @(@{ entity_type = 'line'; x1 = 0.01; y1 = 0.01; x2 = 0.06; y2 = 0.01 }, @{ entity_type = 'line'; x1 = 0.06; y1 = 0.01; x2 = 0.06; y2 = 0.04 }, @{ entity_type = 'line'; x1 = 0.06; y1 = 0.04; x2 = 0.03; y2 = 0.05 }, @{ entity_type = 'line'; x1 = 0.03; y1 = 0.05; x2 = 0.01; y2 = 0.05 }, @{ entity_type = 'line'; x1 = 0.01; y1 = 0.05; x2 = 0.01; y2 = 0.01 })
+    Assert (@($r.dimensions).Count -eq 10) "five-point polyline = 10 ordinates: $(@($r.dimensions).Count)"
+    $r = DefineSketch @(@{ entity_type = 'line'; x1 = 0.0; y1 = 0.0; x2 = 0.04; y2 = 0.0 }, @{ entity_type = 'arc_center'; cx = 0.04; cy = 0.01; x1 = 0.04; y1 = 0.0; x2 = 0.05; y2 = 0.01; direction = 1 }, @{ entity_type = 'line'; x1 = 0.05; y1 = 0.01; x2 = 0.05; y2 = 0.04 }, @{ entity_type = 'line'; x1 = 0.05; y1 = 0.04; x2 = 0.0; y2 = 0.04 }, @{ entity_type = 'line'; x1 = 0.0; y1 = 0.04; x2 = 0.0; y2 = 0.0 })
+    Assert (@($r.relations).Count -ge 1) "points on the axes get relations: $(@($r.relations) -join '; ')"
+    $r = DefineSketch @(@{ entity_type = 'circle'; cx = 0.0; cy = 0.0; radius = 0.005 }, @{ entity_type = 'circle'; cx = 0.03; cy = 0.0; radius = 0.004 }, @{ entity_type = 'circle'; cx = 0.0; cy = -0.02; radius = 0.003 })
+    Assert (@($r.relations).Count -eq 3) "three axis relations (coincident, horizontal points, vertical points): $(@($r.relations) -join '; ')"; Assert (($r.relations -join ' ') -match 'sgVERTICALPOINTS2D') 'the vertical-points relation is sgVERTICALPOINTS2D'
+    $r = DefineSketch @(@{ entity_type = 'rectangle'; x1 = 0.0; y1 = 0.0; x2 = 0.1; y2 = 0.06 }); Assert (@($r.dimensions).Count -eq 2 -and @($r.relations).Count -eq 1) "a corner on the origin: 2 dimensions + 1 coincident relation: $($r | ConvertTo-Json -Compress -Depth 5)"
+    # an already fully defined sketch is a no-op that still reports verified
+    Fresh-Part; Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06 }) 'centre rectangle' | Out-Null
+    $n = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{}) 'no-op'); Assert ($n.verified -eq $true -and @($n.dimensions).Count -eq 0 -and $n.status_before -eq 'fully_defined') "no-op: $($n | ConvertTo-Json -Compress -Depth 5)"
+    # sketch_center_rectangle with the centre on the Y axis ties it with sgVERTICALPOINTS2D (sgVERTPOINTS2D is a silent no-op)
+    Fresh-Part; $c = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06; center_y = 0.05 }) 'centre on the Y axis'); Assert ($c.constrained -eq 'fully_defined' -and $c.verified -eq $true) "centre on the Y axis: $($c | ConvertTo-Json -Compress)"
+    # the pure error cases
+    Fresh-Part; Fail (Invoke-Tool 'sketch_fully_define' @{}) 'NO_ACTIVE_SKETCH' 'no sketch' | Out-Null
+    Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'sketch' | Out-Null; Fail (Invoke-Tool 'sketch_fully_define' @{ sketch = 'Sketch99' }) 'SKETCH_ALREADY_ACTIVE' 'another sketch is active' | Out-Null
+}
+
+Test 'P03e sketch_convert_entities: the MASTER SURFACE DRIVES the base flange (user rule: master sketches come from the surface construction): master rectangle -> surface extrude -> new sketch -> the master''s four z = 0 edges converted (fully defined, 100 x 60) -> base flange; widening the MASTER to 120 mm moves the flat blank to 120 x 60' {
+    Fresh-Part
+    $m = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06 }) 'master sketch'); $msk = $m.sketch
+    Ok (Invoke-Tool 'surface_extrude' @{ sketch = $msk; depth = 0.03 }) 'master surface' | Out-Null
+    Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'target sketch' | Out-Null
+    $pts = @(@(0.0, 0.03, 0.0), @(0.0, -0.03, 0.0), @(0.05, 0.0, 0.0), @(-0.05, 0.0, 0.0))
+    $c = Rg (Ok (Invoke-Tool 'sketch_convert_entities' @{ points = $pts }) 'convert the master edges')
+    Assert ($c.verified -eq $true -and $c.created_segments -eq 4 -and $c.constrained_status -eq 3) "convert: $($c | ConvertTo-Json -Compress -Depth 5)"; Near $c.size[0] 0.1 1e-6 'converted width'; Near $c.size[1] 0.06 1e-6 'converted height'
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; thickness = 0.00127; bend_radius = 0.001905; k_factor = 0.45 }) 'base flange from the converted sketch' | Out-Null
+    $cl = @((Params).cut_list)[0].properties; Near $cl.'Bounding Box Length' 100 1e-3 'blank X (mm)'; Near $cl.'Bounding Box Width' 60 1e-3 'blank Y (mm)'
+    Ok (Invoke-Tool 'modify_dimension' @{ name = "D1@$msk"; value = 0.12 }) 'widen the MASTER' | Out-Null
+    $cl = @((Params).cut_list)[0].properties; Near $cl.'Bounding Box Length' 120 1e-3 'blank X after the master change (mm)'; Near $cl.'Bounding Box Width' 60 1e-3 'blank Y (mm)'
+    # refusals: no active sketch; a point that is on no edge
+    Fresh-Part; Fail (Invoke-Tool 'sketch_convert_entities' @{ points = @(,@(0, 0, 0)) }) 'NO_ACTIVE_SKETCH' 'no sketch' | Out-Null
+    Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06 }) 'sketch' | Out-Null; Ok (Invoke-Tool 'surface_extrude' @{ sketch = 'Sketch1'; depth = 0.03 }) 'surface' | Out-Null
+    Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'sketch 2' | Out-Null; Fail (Invoke-Tool 'sketch_convert_entities' @{ points = @(,@(0.3, 0.3, 0.3)) }) 'EDGE_NOT_FOUND' 'a point on no edge' | Out-Null
+}
+
 Test 'P04 an equation change closes the active sketch - the tools put it back; base_flange without any sketch says NO_PROFILE_SKETCH; sketch_name selects one' {
     Fresh-Part
     Ok (Invoke-Tool 'sketch_center_rectangle' @{ width = 0.1; height = 0.06 }) 'rectangle' | Out-Null
