@@ -463,6 +463,20 @@ def validate(graph):
                 errors.append("%s: 'angle_exact' must be a boolean." % label)
             if node.get("gap") is not None and not _is_pos_number(node.get("gap")):
                 errors.append("%s: 'gap' must be a positive number (meters)." % label)
+            limits = node.get("limits")
+            if limits is not None:
+                # PARTIAL FLANGE inside one feature: the generated profile of an edge is shortened to the stretch from..to along that edge
+                n_edges = len(edges) if isinstance(edges, list) else 1
+                ok_limits = isinstance(limits, list) and len(limits) > 0 and all(
+                    isinstance(lim, dict) and _is_point3(lim.get("from")) and _is_point3(lim.get("to"))
+                    and (lim.get("edge") is None or (isinstance(lim.get("edge"), int) and not isinstance(lim.get("edge"), bool)
+                                                     and 0 <= lim.get("edge") < n_edges))
+                    for lim in limits)
+                if not ok_limits:
+                    errors.append("%s: 'limits' must be a non-empty array of {edge?: index into 'edges', from:[x,y,z], to:[x,y,z]} "
+                                  "(meters; the stretch of that edge that KEEPS its flange; the profile only shrinks)." % label)
+                if node.get("length") is None:
+                    errors.append("%s: 'limits' needs 'length' (simple mode: the generated default profile is what is shortened)." % label)
             angle = node.get("angle")
             if angle is not None and not _is_pos_number(angle):
                 errors.append("%s: 'angle' must be a positive number (RADIANS; omit for 90°)." % label)

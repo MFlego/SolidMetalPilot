@@ -321,6 +321,23 @@ namespace SolidworksExecution.Services
 
                         // Commit the geometry so analyze_model/verify_state read the rebuilt body.
                         modelDoc.EditRebuild3();
+
+                        // profile_limits: shorten the generated profile of an edge along its length (a lip that stops short of a corner, a return flange stopped before its bends) - SolidWorksService.SheetMetalProfile.cs
+                        var limitsTok = p?["profile_limits"] as JArray;
+                        if (limitsTok != null && limitsTok.Count > 0 && feature != null)
+                        {
+                            var limitProblems = new JArray();
+                            var limitReport = ApplyProfileLimits(modelDoc, feature, limitsTok, limitProblems);
+                            if (gaugeInfo == null) gaugeInfo = new JObject { ["feature"] = feature.Name };
+                            gaugeInfo["profile_limits"] = limitReport;
+                            if (limitProblems.Count > 0)
+                            {
+                                gaugeInfo["verified"] = false;
+                                var pr = gaugeInfo["problems"] as JArray ?? new JArray();
+                                foreach (var lp in limitProblems) pr.Add(lp);
+                                gaugeInfo["problems"] = pr;
+                            }
+                        }
                     }
                     if (feature == null)
                     {

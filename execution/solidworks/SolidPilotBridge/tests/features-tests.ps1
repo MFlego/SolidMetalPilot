@@ -712,6 +712,33 @@ Test 'B05 A MULTI-EDGE FLANGE THAT SOLIDWORKS REFUSES (a hole''s circle edge amo
     Fail (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = @(8, 9999); flange_length = 0.0127 }) 'EDGE_NOT_FOUND' 'an index out of range' | Out-Null
 }
 
+Test 'B06 PARTIAL FLANGES INSIDE ONE FEATURE (profile_limits, Phase 8): two plate edges in ONE flange, the +x one stops short at BOTH ends - the feature stays ONE with 2 bends and no rebuild error, the generated profile is shortened to the asked stretch (read back from its sketch), the part loses the removed length of flange (volume), a stretch LONGER than the edge is reported and changes nothing, and sketch_fully_define refuses the flange''s generated profile (allowing it broke the flange)' {
+    $xEdges = { @((Get-Edges).edges | Where-Object { [math]::Abs([math]::Abs($_.mid[0]) - 0.05) -lt 1e-6 -and [math]::Abs($_.mid[1]) -lt 1e-6 -and [math]::Abs($_.mid[2]) -lt 1e-5 } | ForEach-Object { [int]$_.i }) }
+    EdgePlate | Out-Null; $idx = & $xEdges; Assert ($idx.Count -eq 2) "the two x edges of the top face: $($idx.Count)"
+    Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $idx; flange_length = 0.0127 }) 'two full flanges' | Out-Null
+    $vFull = Volume
+    # a limit LONGER than the edge: reported, the flange stays as it was
+    EdgePlate | Out-Null; $idx = & $xEdges
+    $bad = Rg (Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $idx; flange_length = 0.0127; profile_limits = @(@{ point = @(0.05, 0.0, 0.0); from = @(0.05, -0.04, 0.0); to = @(0.05, 0.04, 0.0) }) }) 'a limit longer than the edge')
+    Assert ($bad.verified -eq $false -and (($bad.problems -join ' ') -match 'longer')) "a longer stretch must be reported: $($bad | ConvertTo-Json -Compress -Depth 5)"
+    Near (Volume) $vFull 1e-12 'volume with the refused limit'
+    # the real thing: keep y -0.020 .. +0.010 of the +x edge (0.030 m of its 0.060 m)
+    EdgePlate | Out-Null; $idx = & $xEdges
+    $r = Rg (Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'edge_flange'; edge_indices = $idx; flange_length = 0.0127; profile_limits = @(@{ point = @(0.05, 0.0, 0.0); from = @(0.05, -0.02, 0.0); to = @(0.05, 0.01, 0.0) }) }) 'one flange trimmed')
+    Assert ($r.verified -eq $true) "verified: $($r | ConvertTo-Json -Compress -Depth 5)"
+    $pl = @($r.profile_limits); Assert ($pl.Count -eq 1 -and $pl[0].kept -eq $true) "kept: $($r.profile_limits | ConvertTo-Json -Compress)"
+    Near ($pl[0].old_max - $pl[0].old_min) 0.06 1e-6 'the generated profile covered the whole edge'; Near ($pl[0].new_max - $pl[0].new_min) 0.03 1e-6 'the trimmed profile'
+    $sk = Get-Analysis 'sketch' @{ name = $pl[0].sketch }; $xs = @($sk.sketch.segments | ForEach-Object { $_.x1; $_.x2 })
+    Near (($xs | Measure-Object -Maximum).Maximum - ($xs | Measure-Object -Minimum).Minimum) 0.03 1e-6 'the profile sketch as SolidWorks holds it'
+    $p = Rg (Ok (Invoke-Tool 'sheet_metal_params' @{ action = 'get' }) 'params'); Assert (@($p.edge_flanges).Count -eq 1) "ONE edge-flange feature: $(@($p.edge_flanges).Count)"; Assert (@($p.bends).Count -eq 2) "two bends: $(@($p.bends).Count)"
+    # the section of the flange = leg + bend arc; where it is taken away the plate keeps its edge strip (r + t wide) instead of the bend: 30 mm of (section - strip)
+    $t = 0.00127; $rr = 0.001905; $area = (0.0127 - ($t + $rr)) * $t + [math]::PI / 4 * ((($t + $rr) * ($t + $rr)) - ($rr * $rr)) - ($t + $rr) * $t
+    $dv = $vFull - (Volume); $expect = 0.03 * $area; Assert ([math]::Abs($dv - $expect) -lt 0.10 * $expect) "the part lost $dv m3 of flange, expected about $expect (30 mm of a $area m2 section)"
+    $f = (Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'list')).features | Where-Object { $_.type -eq 'EdgeFlange' }; Assert (@($f).Count -eq 1) 'one EdgeFlange in the tree'
+    Fail (Invoke-Tool 'sketch_fully_define' @{ sketch = $pl[0].sketch }) 'SKETCH_OWNED_BY_FLANGE' 'the flange''s generated profile' | Out-Null
+    Near (Volume) ($vFull - $dv) 1e-12 'the refused sketch_fully_define changed nothing'
+}
+
 Invoke-Tool 'close_document' @{ save = $false; close_all = $true } | Out-Null
 ""; $fail = @($script:results | Where-Object { -not $_.pass }).Count
 $h1 = (Sw).HandleCount; $m1 = [int]((Sw).PrivateMemorySize64 / 1MB)

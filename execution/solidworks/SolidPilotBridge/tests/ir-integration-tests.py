@@ -604,6 +604,33 @@ def t_master_driven():
     near(cl["Bounding Box Length"], 120.0, 1e-3, "blank X after the MASTER's x dimension 50 -> 70 mm"); near(cl["Bounding Box Width"], 60.0, 1e-3, "blank Y")
 
 
+@test("I26 PARTIAL FLANGES AS A GRAPH (Phase 8): ONE edge_flange node with two anchors and `limits` stops the +x flange 20 mm / 10 mm inside its edge - ONE feature, 2 bends, the tool reports the profile kept (0.060 -> 0.030 m), and a limit longer than the edge is refused by the node's own result (verified false)")
+def t_partial_flange():
+    plate = [sk("s1", "front", [rect(0.1, 0.06)]), {"id": "n2", "type": "sheet_metal", "sketch": "s1", "thickness": 0.00127, "bend_radius": 0.001905, "k_factor": 0.45}]
+    ok(build(graph(plate, fully_define_sketches=True)), "plate")
+    xs = [e for e in edges() if abs(e["mid"][2]) < 1e-5 and abs(abs(e["mid"][0]) - 0.05) < 1e-6 and abs(e["mid"][1]) < 1e-6]
+    check(len(xs) == 2, "two x edges: %d" % len(xs))
+    plus = next(e for e in xs if e["mid"][0] > 0)
+    node_ = {"id": "ef", "type": "edge_flange", "edges": [at(*e["mid"]) for e in xs], "length": 0.0127,
+             "limits": [{"edge": [e["i"] for e in xs].index(plus["i"]), "from": [0.05, -0.02, 0.0], "to": [0.05, 0.01, 0.0]}]}
+    res = ok(build(graph(node_), fresh=False), "partial flange")
+    r = rg(res, "ef", "sheet_metal_feature")
+    check(r["verified"] is True and r["edges"] == 2, r)
+    pl = r["profile_limits"]
+    check(len(pl) == 1 and pl[0]["kept"] is True, pl)
+    near(pl[0]["old_max"] - pl[0]["old_min"], 0.06, 1e-6, "the generated profile covered the whole edge"); near(pl[0]["new_max"] - pl[0]["new_min"], 0.03, 1e-6, "the trimmed profile")
+    p = params_get()
+    check(len(p["edge_flanges"]) == 1 and len(p["bends"]) == 2, "ONE edge-flange feature with 2 bends: %s" % json.dumps(p["edge_flanges"]))
+    # a stretch longer than the edge: the node does not pretend (the tool reports it, the compiler stops the node UNVERIFIED)
+    ok(build(graph(plate, fully_define_sketches=True)), "plate again")
+    xs = [e for e in edges() if abs(e["mid"][2]) < 1e-5 and abs(abs(e["mid"][0]) - 0.05) < 1e-6 and abs(e["mid"][1]) < 1e-6]
+    bad = {"id": "ef", "type": "edge_flange", "edges": [at(*e["mid"]) for e in xs], "length": 0.0127, "limits": [{"edge": 0, "from": [xs[0]["mid"][0], -0.04, 0.0], "to": [xs[0]["mid"][0], 0.04, 0.0]}]}
+    err = refused(build(graph(bad), fresh=False), "UNVERIFIED", "ef")
+    check("longer" in err["message"], "the node's message names the reason: %s" % err["message"][:300])
+    # validation: an edge index that does not exist
+    refused(build(graph(plate, {"id": "ef", "type": "edge_flange", "edges": [at(0.05, 0, 0), at(-0.05, 0, 0)], "length": 0.0127, "limits": [{"edge": 5, "from": [0.05, -0.01, 0], "to": [0.05, 0.01, 0]}]})), "VALIDATION_FAILED")
+
+
 # ---------------------------------------------------------------------------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------------------------------------------------------------------------

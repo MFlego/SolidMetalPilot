@@ -369,6 +369,21 @@ def lower_sketched_bend(node):
                % (angle_rad, near[0], near[1], near[2]))]
 
 
+def _add_profile_limits(params, node):
+    """edge_flange `limits` -> the tool's profile_limits: [{point (the anchor of that edge), from, to}] (METERS; the stretch of the edge that keeps its flange)."""
+    limits = node.get("limits")
+    if not limits:
+        return
+    anchors = node.get("edges") if node.get("edges") is not None else [node.get("edge")]
+    out = []
+    for lim in limits:
+        k = lim.get("edge")
+        k = 0 if k is None else int(k)
+        out.append({"point": [float(v) for v in anchors[k]["near"]],
+                    "from": [float(v) for v in lim["from"]], "to": [float(v) for v in lim["to"]]})
+    params["profile_limits"] = out
+
+
 def lower_edge_flange(node, edge_index):
     """edge_flange — TWO MODES (v0.7.0):
 
@@ -404,17 +419,19 @@ def lower_edge_flange(node, edge_index):
             params["angle_exact"] = True
         if node.get("gap") is not None:
             params["gap"] = float(node["gap"])
+        _add_profile_limits(params, node)
         return [Op("sheet_metal_feature", params,
                    "edge flange (multi-edge, ONE feature): length %g on edges %s"
-                   % (float(node["length"]), indices))]
+                   % (float(node["length"]), indices), "profile_limits" in params)]      # a trim that was not kept stops the node (UNVERIFIED)
     if node.get("length") is not None:
         params = {"feature_type": "edge_flange", "edge_index": int(edge_index),
                   "flange_length": float(node["length"]), "angle": angle_deg}
         if node.get("angle_exact") is True:
             params["angle_exact"] = True
+        _add_profile_limits(params, node)
         return [Op("sheet_metal_feature", params,
                    "edge flange (simple): length %g on edge #%d"
-                   % (float(node["length"]), int(edge_index)))]
+                   % (float(node["length"]), int(edge_index)), "profile_limits" in params)]
     gen = {"feature_type": "edge_flange_sketch", "edge_index": int(edge_index),
            "angle": angle_deg}
     if node.get("flip") is True:

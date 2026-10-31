@@ -306,6 +306,11 @@ namespace SolidworksExecution.Services
                 if (sk == null)
                 {
                     if (string.IsNullOrEmpty(name)) throw new ToolFailure("NO_ACTIVE_SKETCH", "No sketch is active: call it right after create_sketch / add_sketch_entities, or pass `sketch` (the sketch's name) to edit that one.");
+                    // the profile sketch of an EDGE FLANGE is not ours to define: measured 2026-10-30, fully defining one deleted dimensions inside the flange's own sketch, the flange failed to rebuild
+                    // (66 faces -> 22) and the next call killed SolidWorks. Shorten a profile with sheet_metal_feature profile_limits instead.
+                    var named = ((IPartDoc)doc).FeatureByName(name) as IFeature; var owner = named == null ? null : named.GetOwnerFeature() as IFeature;
+                    if (owner != null && owner.GetTypeName2() == "EdgeFlange")
+                        throw new ToolFailure("SKETCH_OWNED_BY_FLANGE", "Sketch '" + name + "' is the generated profile of " + owner.Name + ": fully defining it breaks the flange. Use sheet_metal_feature profile_limits to shorten a profile.");
                     doc.ClearSelection2(true);
                     if (!doc.Extension.SelectByID2(name, "SKETCH", 0, 0, 0, false, 0, null, 0)) throw new ToolFailure("SKETCH_NOT_FOUND", "No sketch named '" + name + "'.");
                     doc.EditSketch(); doc.ClearSelection2(true);

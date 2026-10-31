@@ -1419,6 +1419,61 @@ def test_edge_flange_multi_edge_validation():
         assert port.calls == []
 
 
+def test_edge_flange_limits_lower_to_profile_limits():
+    # PARTIAL FLANGES inside ONE feature (Phase 8): `limits` = [{edge, from, to}] lowers to the tool's profile_limits
+    # [{point = that edge's anchor, from, to}] on the SAME single sheet_metal_feature call; absent -> no profile_limits
+    g = {
+        "schema_version": "0.8.0-draft", "units": "meters",
+        "nodes": [
+            {"id": "s1", "type": "sketch", "ref": {"datum": "top"},
+             "profile": [{"kind": "rectangle", "width": 0.1, "height": 0.06}]},
+            {"id": "sm1", "type": "sheet_metal", "sketch": "s1", "thickness": 0.002},
+            {"id": "ef1", "type": "edge_flange",
+             "edges": [{"near": [0.0, 0.0, 0.0]}, {"near": [-0.208219, 0.236714, -0.15089]}],
+             "length": 0.0127,
+             "limits": [{"edge": 1, "from": [-0.208219, 0.2, -0.15089], "to": [-0.208219, 0.27, -0.15089]}]},
+        ],
+    }
+    port = FakePort(edges=_EF_EDGES)
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    assert _tools(port).count("sheet_metal_feature") == 2        # still ONE multi-edge flange
+    ef = port.calls[-1][1]
+    assert ef["edge_indices"] == [3, 170]
+    assert ef["profile_limits"] == [{"point": [-0.208219, 0.236714, -0.15089],
+                                     "from": [-0.208219, 0.2, -0.15089], "to": [-0.208219, 0.27, -0.15089]}]
+    del g["nodes"][2]["limits"]
+    port = FakePort(edges=_EF_EDGES)
+    assert compile_and_run(port, g).status == "COMPLETED"
+    assert "profile_limits" not in port.calls[-1][1]
+    # single-edge simple mode: the edge defaults to the only anchor
+    g["nodes"][2] = {"id": "ef1", "type": "edge_flange", "edge": {"near": [0.0, 0.0, 0.0]}, "length": 0.0127,
+                     "limits": [{"from": [0.0, 0.0, 0.0], "to": [0.05, 0.0, 0.0]}]}
+    port = FakePort(edges=_EF_EDGES)
+    assert compile_and_run(port, g).status == "COMPLETED"
+    assert port.calls[-1][1]["profile_limits"][0]["point"] == [0.0, 0.0, 0.0]
+
+
+def test_edge_flange_limits_validation():
+    base = [{"id": "s1", "type": "sketch", "ref": {"datum": "top"},
+             "profile": [{"kind": "rectangle", "width": 0.1, "height": 0.06}]},
+            {"id": "sm1", "type": "sheet_metal", "sketch": "s1", "thickness": 0.002}]
+    two = [{"near": [0, 0, 0]}, {"near": [0.1, 0, 0]}]
+    ok_lim = {"from": [0, 0, 0], "to": [0.05, 0, 0]}
+    bads = [
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "length": 0.02, "limits": []}],
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "length": 0.02, "limits": [{"from": [0, 0, 0]}]}],
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "length": 0.02, "limits": [dict(ok_lim, edge=2)]}],     # no third edge
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "length": 0.02, "limits": [dict(ok_lim, edge=True)]}],
+        base + [{"id": "ef1", "type": "edge_flange", "edges": two, "limits": [ok_lim]}],                                  # no length
+    ]
+    for nodes in bads:
+        port = FakePort()
+        r = compile_and_run(port, {"schema_version": "0.8.0-draft", "units": "meters", "nodes": nodes})
+        assert r.status == "FAILED" and r.error["code"] == "VALIDATION_FAILED", r.to_dict()
+        assert port.calls == []
+
+
 def test_fully_define_sketches_opt_in():
     # user rule (Phase 7 post-mortem): every sketch fully defined, even hole sketches. Opt-in per graph
     # (`fully_define_sketches`) or per node (`fully_define`, wins over the graph); a sketch node gets ONE

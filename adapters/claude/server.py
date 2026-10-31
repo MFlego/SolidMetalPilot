@@ -1614,6 +1614,7 @@ def sheet_metal_feature(
     edge_indices: str = "",
     angle_exact: bool = False,
     gap: Optional[float] = None,
+    profile_limits: str = "",
 ) -> str:
     """Create sheet metal features on the active part. Lengths METERS, angles DEGREES.
 
@@ -1649,6 +1650,12 @@ def sheet_metal_feature(
         HARD DEFAULT 90 DEGREES: an angle within 5 degrees of 90 is snapped to exactly 90 (the reply carries
         angle_note) - set angle_exact=True only when the USER stated that angle; never use an angle read off
         a picture.
+        PARTIAL FLANGES inside the same feature: profile_limits = a JSON array '[{"point":[x,y,z],"from":[x,y,z],
+        "to":[x,y,z]}]' (METERS) shortens the generated profile of the edge through `point` to the stretch from..to
+        along that edge (a lip that stops 5/16 in short of a corner, a return flange stopped before its bends).
+        The profile only shrinks; the flange is checked by its own error code and the old extent is put back when
+        it fails (result profile_limits[{sketch, old_min, old_max, new_min, new_max, kept}]). Never
+        sketch_fully_define a flange's generated profile (it breaks the flange: SKETCH_OWNED_BY_FLANGE).
     'edge_flange_sketch' + 'edge_flange_finish' — the CUSTOM-profile flange, in two calls. The
         sketch call takes the attach edge (edge_index preferred, else ex/ey/ez), generates the
         edge-linked profile sketch (the API accepts ONLY a sketch it generated), clears it
@@ -1696,6 +1703,8 @@ def sheet_metal_feature(
         params["angle_exact"] = True
     if gap is not None:
         params["gap"] = gap
+    if profile_limits:
+        params["profile_limits"] = json.loads(profile_limits) if isinstance(profile_limits, str) else profile_limits
     if sketch_name:
         params["sketch_name"] = sketch_name
     if gauge_table:

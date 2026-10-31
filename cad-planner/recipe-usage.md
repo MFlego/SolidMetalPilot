@@ -89,7 +89,11 @@ original — these rules replace the readback discipline there. C1–C5 still ap
   at graph level** - every sketch (hole sketches too) is then fully defined by a strict `sketch_fully_define` after its
   entities (a node's own `fully_define` wins; the default is off only so that a replay of an analysed part keeps the
   original's sketches). (2) **Flanges with equal parameters are ONE `edge_flange` node**: `edges: [anchor, ...]` + `length`
-  (never one node per edge); neighbouring flanges meet in a tight closed corner (`gap`, default 0.003 in). (3) **Bends are
+  (never one node per edge); neighbouring flanges meet in a tight closed corner (`gap`, default 0.003 in). A flange that must
+  stop short of a corner or a bend stays in the same node: `limits: [{edge: <index into edges>, from: [x,y,z], to: [x,y,z]}]`
+  (meters; the stretch of that edge that KEEPS its flange - the profile only shrinks; a trim SolidWorks cannot keep stops the
+  node UNVERIFIED). Order matters: Break-Corner on a wall BEFORE the partial flange on its edge (the flange's end relief makes
+  SolidWorks refuse a 1/16 in or larger corner round on that wall). (3) **Bends are
   exactly 90°**: omit `angle`; an angle within 5° of 90° is snapped to 90 by the tool, and `angle_exact: true` is for an angle
   the USER stated - never one read off a picture. (4) **Master-driven profiles**: a `sketch` with `from_edges: [anchor, ...]`
   converts the edges of the master shape (the LOD <= 100 base shape) into the sketch, so the master drives the base flange.
