@@ -10,7 +10,11 @@
 //     ratio_to_thickness built nothing for every dimension tried (not offered);
 //   - SOLIDWORKS DIED TWICE while this was found (scratch trays): (1) objects of corners that had been REMOVED (RemoveCorner) are dangling - touching them kills it; (2) CollectAllCorners answered error 4
 //     (InvalidReliefType) for relief 2 (bend waist, a THREE-bend relief) yet returned an array, and setting ReliefType = 2 on those two-bend corners killed it. So this tool touches the corners only when
-//     CollectAllCorners answered 0, offers only the five types that were built and measured (circular, square, tear, obround, rectangular), never removes a corner, and refuses three-bend corners (no part to test them on yet).
+//     CollectAllCorners answered 0, offers only the types that were built and measured, and never removes a corner;
+//   - THREE-BEND corners (swCornerReliefBendType_ThreeBend = 1, Initialize(1)): the corner where a flange runs round a bend and meets the neighbouring flange (the mitred front-bottom corner of a tray with end flanges and a lip). A part with such
+//     corners was measured: CollectAllCorners(9) on the right body answers 0 with the corners, on a body without them it answers error 6; the rectangular relief (9) builds, reads back as relief 9 with the length given, and the feature reads back
+//     CornerType = 1. Only the rectangular relief is offered there; the bend waist / constant width / mixed / full round / suit case reliefs are still untested;
+//   - a part with SEVERAL solid bodies: SetBodyScope takes the body (`body` = its name); the feature then holds only that body's corners.
 // All corners of the part get the relief (a subset needs RemoveCorner; not offered). Lengths METERS.
 using System;
 using System.Collections.Generic;
@@ -43,7 +47,9 @@ namespace SolidworksExecution.Services
                     default: throw new ToolFailure("INVALID_PARAMETER", "relief must be 'circular' (default), 'square', 'tear', 'obround' or 'rectangular' - the five types built and measured on two-bend corners (bend waist, constant width, mixed, full round and suit case are three-bend reliefs and killed SolidWorks on two-bend corners).");
                 }
                 string ctype = (p.Value<string>("corner_type") ?? "two_bend").Trim().ToLowerInvariant();
-                if (ctype != "two_bend") throw new ToolFailure("INVALID_PARAMETER", "corner_type must be 'two_bend' (the corner where the bends of two walls meet). 'three_bend' is not offered: no part with three-bend corners has been available to measure it on, and the wrong relief type for a corner kills SolidWorks.");
+                if (ctype != "two_bend" && ctype != "three_bend") throw new ToolFailure("INVALID_PARAMETER", "corner_type must be 'two_bend' (the corner where the bends of two walls meet) or 'three_bend' (three bends meet: a flange running round a bend, the mitred front corner of a tray).");
+                bool three = ctype == "three_bend";
+                if (three && rt != 9) throw new ToolFailure("INVALID_PARAMETER", "A three_bend corner takes the 'rectangular' relief only - the one measured on three-bend corners (it reads back as type 9). Bend waist, constant width, mixed, full round and suit case are not offered: a relief type the corners did not accept killed SolidWorks twice.");
                 double width = p.Value<double?>("width") ?? 0.0, length = p.Value<double?>("length") ?? 0.0, fillet = p.Value<double?>("fillet_diameter") ?? 0.0; double thickness = SheetThickness(doc);
                 if (width < 0 || length < 0 || fillet < 0) throw new ToolFailure("INVALID_PARAMETER", "width, length and fillet_diameter are lengths in METERS and cannot be negative.");
                 if ((rt == 1 || rt == 9) && length <= 0) throw new ToolFailure("MISSING_PARAMETER", "length (meters, > 0): the side of a " + rel + " relief (the width makes no difference).");
@@ -56,16 +62,28 @@ namespace SolidworksExecution.Services
                 if (filleted == true && fillet <= 0) throw new ToolFailure("MISSING_PARAMETER", "fillet_diameter (meters, > 0) is required with add_filleted_corners.");
 
                 var bodies = part.GetBodies2((int)swBodyType_e.swSolidBody, false) as object[];
-                if (bodies == null || bodies.Length != 1) throw new ToolFailure("INVALID_PARAMETER", "The corner relief works on a part with exactly ONE solid body (this one has " + (bodies == null ? 0 : bodies.Length) + ").");
+                if (bodies == null || bodies.Length == 0) throw new ToolFailure("INVALID_PARAMETER", "The part has no solid body.");
+                string bodyName = p.Value<string>("body"); object scopeBody = null; string names = string.Join(", ", bodies.Select(b => "'" + ((Body2)b).Name + "'").ToArray());
+                if (!string.IsNullOrEmpty(bodyName))
+                {
+                    foreach (var b in bodies) if (string.Equals(((Body2)b).Name, bodyName, StringComparison.OrdinalIgnoreCase)) scopeBody = b;
+                    if (scopeBody == null) throw new ToolFailure("INVALID_PARAMETER", "No solid body named '" + bodyName + "' (the part has " + names + ").");
+                }
+                else
+                {
+                    if (bodies.Length != 1) throw new ToolFailure("INVALID_PARAMETER", "The part has " + bodies.Length + " solid bodies (" + names + "): name the one to relieve with 'body'.");
+                    scopeBody = bodies[0];
+                }
+                string scopeName = ((Body2)scopeBody).Name;          // read now: the body object is stale after the rebuild
                 var before = BodyStats(doc); double vol0 = ExactVolume(doc); var names0 = TopNames(doc);
                 if (doc.SketchManager.ActiveSketch != null) doc.SketchManager.InsertSketch(true);
 
                 var def = doc.FeatureManager.CreateDefinition((int)swFeatureNameID_e.swFmCornerRelief) as ICornerReliefFeatureData;
                 if (def == null) throw new ToolFailure("CORNER_RELIEF_FAILED", "CreateDefinition(swFmCornerRelief) returned nothing.");
-                int scope = def.SetBodyScope(bodies[0]); if (scope != 0) throw new ToolFailure("CORNER_RELIEF_FAILED", "SetBodyScope answered error " + scope + " (swCornerReliefError_e).");
-                if (!def.Initialize(0)) throw new ToolFailure("CORNER_RELIEF_FAILED", "Initialize(two-bend corners) failed.");
+                int scope = def.SetBodyScope(scopeBody); if (scope != 0) throw new ToolFailure("CORNER_RELIEF_FAILED", "SetBodyScope answered error " + scope + " (swCornerReliefError_e).");
+                if (!def.Initialize(three ? 1 : 0)) throw new ToolFailure("CORNER_RELIEF_FAILED", "Initialize(" + (three ? "three" : "two") + "-bend corners) failed.");
                 object collected = null; int err = def.CollectAllCorners(rt, out collected); var corners = collected as object[];
-                if (err == 6 || ((corners == null || corners.Length == 0) && err == 0)) throw new ToolFailure("NO_CORNERS", "The part has no two-bend corners: the walls must stand on the sheet and meet at a corner (edge flanges on adjacent edges).");
+                if (err == 6 || ((corners == null || corners.Length == 0) && err == 0)) throw new ToolFailure("NO_CORNERS", three ? "The body has no three-bend corners (three bends meeting: a flange that runs round a bend and meets the neighbouring flange)." : "The body has no two-bend corners: the walls must stand on the sheet and meet at a corner (edge flanges on adjacent edges).");
                 if (err != 0 || corners == null) throw new ToolFailure("CORNER_RELIEF_FAILED", "CollectAllCorners answered error " + err + " (swCornerReliefError_e: 1 faces, 2 body, 3 corner type, 4 relief type, 5 index, 6 generic) - the corners were not touched.");
 
                 foreach (var o in corners)
@@ -82,7 +100,7 @@ namespace SolidworksExecution.Services
                 doc.EditRebuild3(); int ferr = FeatureError(feat);
                 if (ferr != 0) { DeleteFeatureQuietly(doc, feat.Name); doc.EditRebuild3(); throw new ToolFailure("CORNER_RELIEF_FAILED", "The corner relief was built but reports rebuild error " + ferr + " and was taken out again."); }
 
-                var problems = new JArray(); var res = new JObject { ["feature"] = feat.Name, ["feature_type"] = feat.GetTypeName2(), ["relief"] = rel, ["corner_type"] = ctype, ["corners_collected"] = corners.Length };
+                var problems = new JArray(); var res = new JObject { ["feature"] = feat.Name, ["feature_type"] = feat.GetTypeName2(), ["relief"] = rel, ["corner_type"] = ctype, ["body"] = scopeName, ["corners_collected"] = corners.Length };
                 var back = feat.GetDefinition() as ICornerReliefFeatureData; bool acc = false;
                 try
                 {

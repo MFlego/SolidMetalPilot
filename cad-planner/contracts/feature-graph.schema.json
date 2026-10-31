@@ -316,6 +316,10 @@
    "square",
    "tear"
   ],
+  "corner_relief_bend_types": [
+   "three_bend",
+   "two_bend"
+  ],
   "_note": "The subset pycompiler compiles today (key renamed from v05_covered_subset at 0.7.0 — the version lives in _meta, not the key). Outside it the compiler rejects the graph at structural-validation time (no silent gaps). Superset of the v0-exp subset (box+hole fixture still compiles unchanged). CONTRACT (0.7.1, audit-A1): every ARRAY in this block is machine-diffed against the matching frozenset in compiler/solidworks/pycompiler/ir_schema.py by pycompiler/tests/test_ir_schema_contract.py — both directions, exact set equality. Adding a token on one side alone FAILS CI. The prose keys (_note, datum_offset, assumptions) are deliberately NOT contract; per-param types/ranges live in ir_schema.py code and are exercised by the pycompiler suite, not by string-parsing this file.",
   "_grammar_note": "body_producers = node types whose body a 'hole' may reference (ref.node_face.node). feature_producers = node types that CREATE a named feature, so they are valid seeds for linear_pattern/circular_pattern/mirror (the compiler substitutes the seed's runtime feature name). Patterns are producers themselves — that is what lets a grid compose as a pattern OF a pattern.",
   "assumptions": "box centred on the datum origin ('center' -> sketch (0,0)); 'top' bound to global +Y; single body. Path-profile sketches carry EXACT 2D coordinates (from analyze_model(sketch)) — the sketch plane's 2D frame is assumed identical between original and rebuild (same datum/offset => same frame). General 3D-point->sketch-2D resolution for arbitrary faces remains P1.5 option B."
@@ -518,7 +522,9 @@
    "centered_on_bend_lines": "boolean (optional, set on the feature)"
   },
   "corner_relief": {
-   "description": "CORNER RELIEF (sheet_metal_corner_relief): the relief cut where the bends of two walls meet at a corner - ONE feature for EVERY two-bend corner of the part (the open corners of a tray of edge flanges). Only these five relief types were built and measured; the three-bend reliefs kill SolidWorks on two-bend corners and are not offered.",
+   "description": "CORNER RELIEF (sheet_metal_corner_relief): the relief cut where the bends of two walls (two_bend) or three bends (three_bend) meet at a corner - ONE feature for EVERY corner of that type of the body (the open corners of a tray of edge flanges; the mitred corner where a flange runs round a bend). Five relief types were built and measured on two-bend corners; a three-bend corner takes the rectangular relief only; the other three-bend reliefs kill SolidWorks on two-bend corners and are not offered.",
+   "corner_type": "'two_bend' (default) | 'three_bend' (three bends meet; 'relief' must be 'rectangular' and `length` is required, e.g. the outer bend radius = inside radius + thickness)",
+   "body": "string (optional): the NAME of the solid body to relieve - required when the part has several solid bodies",
    "relief": "'circular' (default; `width` is the diameter, at least 2 x the thickness) | 'square' | 'rectangular' (`length` is the side; ONE cut - SolidWorks stores a square relief as a rectangular one) | 'tear' (fixed by the geometry) | 'obround' (a slot about twice as long as wide: `length` and `width`)",
    "width": "number - meters (> 0): the diameter of a circular relief / the width of an obround one (default 2 x the thickness)",
    "length": "number - meters (> 0): the side of a square / rectangular relief / the length of an obround one (required for those; default 2 x the thickness)",

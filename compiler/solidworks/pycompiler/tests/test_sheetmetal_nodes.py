@@ -242,6 +242,16 @@ def test_each_node_lowers_to_the_exact_tool_call():
         assert last["id"] == CASES[ntype][0]["id"] and last["status"] == "COMPLETED", (ntype, last)
 
 
+def test_three_bend_corner_relief_lowers_with_its_corner_type_and_body():
+    node = {"id": "r3", "type": "corner_relief", "corner_type": "three_bend", "relief": "rectangular", "length": 0.003175, "body": "Base"}
+    g = graph(node)
+    assert ir_schema.validate(g) == []
+    port, r = run(g)
+    assert r.status == "COMPLETED", r.to_dict()
+    calls = [p for (t, p) in port.calls if t == "sheet_metal_corner_relief"]
+    assert calls == [{"relief": "rectangular", "length": 0.003175, "corner_type": "three_bend", "body": "Base"}], calls
+
+
 def test_minimal_forms_are_valid_and_send_only_what_was_given():
     minimal = {
         "hem": {"edges": [P(0, 0.03, 0.025)]}, "break_corner": {"faces": [P(0, 0, 0)], "distance": 0.001}, "closed_corner": {"faces": [P(0, 0, 0)]}, "corner_relief": {},
@@ -311,6 +321,9 @@ def test_cross_field_rules():
     assert "a square relief needs 'length'" in _errors({"id": "r", "type": "corner_relief", "relief": "square"})
     assert "an obround relief needs 'width' and 'length'" in _errors({"id": "r", "type": "corner_relief", "relief": "obround", "length": 0.006})
     assert "add_filleted_corners needs 'fillet_diameter'" in _errors({"id": "r", "type": "corner_relief", "add_filleted_corners": True})
+    assert "a three_bend corner takes the 'rectangular' relief only" in _errors({"id": "r", "type": "corner_relief", "corner_type": "three_bend", "relief": "obround", "length": 0.006, "width": 0.003})
+    assert "a three_bend corner needs 'length'" in _errors({"id": "r", "type": "corner_relief", "corner_type": "three_bend", "relief": "rectangular"})
+    assert "'corner_type' must be one of" in _errors({"id": "r", "type": "corner_relief", "corner_type": "four_bend"})
     assert "'relief' must be one of" in _errors({"id": "r", "type": "corner_relief", "relief": "bend_waist"})          # a THREE-bend relief: it killed SolidWorks on two-bend corners, so the vocabulary does not have it
     assert "needs 'distance'" in _errors({"id": "v", "type": "move_face", "faces": [P(0, 0, 0)]})
     assert "needs 'translation'" in _errors({"id": "v", "type": "move_face", "faces": [P(0, 0, 0)], "move_type": "translate"})

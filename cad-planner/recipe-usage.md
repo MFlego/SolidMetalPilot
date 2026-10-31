@@ -115,7 +115,7 @@ original — these rules replace the readback discipline there. C1–C5 still ap
   toward the side of the edge you pick (the OUTER top edge of a wall folds outward). **closed_corner** takes the
   wall END face that points at its neighbour. **corner_relief** relieves EVERY two-bend corner of the part in one feature
   (circular: `width` = the diameter, at least twice the thickness; square / rectangular: `length`; obround: `length` and
-  `width`, about 2 : 1; three-bend reliefs are not in the vocabulary). **tab_slot** needs a MULTI-BODY part: make the bodies with
+  `width`, about 2 : 1; `corner_type: three_bend` (three bends meet) takes the rectangular relief only, `length` required; `body` names the body of a multi-body part). **tab_slot** needs a MULTI-BODY part: make the bodies with
   `extrude` `merge:false`. A **jog** needs a flat sheet face in the Front plane. **gusset** faces are the sheet face
   and the flange face beside the bend. Angles are RADIANS everywhere. The new nodes are STRICT — an unknown field is
   an error, never a silent default — and when a tool measures a problem in its own result the node stops with

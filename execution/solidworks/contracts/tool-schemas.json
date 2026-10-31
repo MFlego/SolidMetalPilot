@@ -879,7 +879,7 @@
   "output": "\u2192 see execution-response.json \u2014 place: result_geometry {feature, feature_type, tool, tool_path, configuration, rotation, point, pick_point, face_normal, pushes_toward, volume_before, volume_after, volume_change, centre_of_mass_before, centre_of_mass_after, body_before, body_after, feature_faces, pick_to_footprint, overhang_checked, problems[], verified}; list: {folders[], count, tools[{name, category, relative_path, path}]}"
  },
  "sheet_metal_corner_relief": {
-  "description": "CORNER RELIEF (swFmCornerRelief): the relief cut where the bends of two walls meet at a corner, ONE feature for every two-bend corner of the part, through CreateDefinition -> ICornerReliefFeatureData -> SetBodyScope(the body, REQUIRED) -> Initialize(two-bend) -> CollectAllCorners -> ISMCornerReliefData per corner -> CreateFeature. Five relief types were built and measured (circular, square, tear, obround, rectangular); the three-bend reliefs killed SolidWorks on two-bend corners and are not offered. The corners are touched only when CollectAllCorners answered 0; the result is checked (rebuild error 0 else taken out again, relief type read back - a square relief reads back as rectangular, the same cut - volume down). Lengths meters. Bumps state_version.",
+  "description": "CORNER RELIEF (swFmCornerRelief): the relief cut where the bends of two walls (two_bend) or three bends (three_bend) meet at a corner, ONE feature for every corner of that type of the body, through CreateDefinition -> ICornerReliefFeatureData -> SetBodyScope(the body, REQUIRED) -> Initialize(0 two-bend | 1 three-bend) -> CollectAllCorners -> ISMCornerReliefData per corner -> CreateFeature. Five relief types were built and measured on two-bend corners (circular, square, tear, obround, rectangular); three-bend corners take the rectangular relief only (measured); the other three-bend reliefs killed SolidWorks on two-bend corners and are not offered. The corners are touched only when CollectAllCorners answered 0; the result is checked (rebuild error 0 else taken out again, relief type read back - a square relief reads back as rectangular, the same cut - volume down). Lengths meters. Bumps state_version.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -887,7 +887,8 @@
     "relief": "string ('circular' (default) | 'square' | 'tear' | 'obround' | 'rectangular')",
     "width": "number (meters, > 0): circular = the diameter (at least 2 x the thickness), obround = the slot width; default 2 x the thickness",
     "length": "number (meters, > 0): square / rectangular = the side, obround = the slot length (about twice the width); required for those; default 2 x the thickness",
-    "corner_type": "string ('two_bend' (default); 'three_bend' is refused)",
+    "corner_type": "string ('two_bend' (default) | 'three_bend': three bends meet - rectangular relief only, `length` required)",
+    "body": "string (optional; the NAME of the solid body to relieve - required when the part has several solid bodies)",
     "tangent_to_bend": "boolean (optional)",
     "center_on_bend_lines": "boolean (optional)",
     "add_filleted_corners": "boolean (optional, needs fillet_diameter)",

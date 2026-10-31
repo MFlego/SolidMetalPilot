@@ -2816,17 +2816,24 @@ def sheet_metal_corner_relief(
     relief: Literal["circular", "square", "tear", "obround", "rectangular"] = "circular",
     width: Optional[float] = None,
     length: Optional[float] = None,
-    corner_type: Literal["two_bend"] = "two_bend",
+    corner_type: Literal["two_bend", "three_bend"] = "two_bend",
+    body: Optional[str] = None,
     tangent_to_bend: Optional[bool] = None,
     center_on_bend_lines: Optional[bool] = None,
     add_filleted_corners: Optional[bool] = None,
     fillet_diameter: Optional[float] = None,
 ) -> str:
     """CORNER RELIEF: the relief SolidWorks cuts where the bends of two walls meet at a corner (the open corner of a
-    tray, a box made of edge flanges) - ONE feature for EVERY two-bend corner of the part. Lengths METERS.
+    tray, a box made of edge flanges) - ONE feature for EVERY corner of the chosen type of the body. Lengths METERS.
+    corner_type: 'two_bend' (default; two walls meet) or 'three_bend' (three bends meet: a flange that runs round a bend
+        and meets the neighbouring flange - the mitred front corner of a tray with end flanges and a lip). A three-bend
+        corner takes the 'rectangular' relief only (the one measured there; give `length`, e.g. the OUTER bend radius
+        = inside radius + thickness); a body without three-bend corners answers NO_CORNERS.
+    body: the NAME of the solid body to relieve (required when the part has several; the feature holds only that body's
+        corners); with one solid body it can be left out.
     relief: 'circular' (default), 'square', 'tear', 'obround' or 'rectangular' - the five types built and measured on
-        two-bend corners. (Bend waist, constant width, mixed, full round and suit case are THREE-bend reliefs: setting
-        one on two-bend corners killed SolidWorks, so they are not offered; corner_type 'three_bend' is refused.)
+        two-bend corners. (Bend waist, constant width, mixed, full round and suit case are other three-bend reliefs:
+        setting one on two-bend corners killed SolidWorks, so they are not offered.)
     MEASURED on a 1.5 mm sheet (four corners): circular = `width` is the DIAMETER, at least 2 x the thickness (2.9 mm
         builds nothing, 3 mm does): 3 / 4 / 6 mm remove 128.87 / 226.68 / 510.01 mm3; square and rectangular = `length`
         is the side (3 / 4 / 5 / 6 mm remove 60.41 / 75.23 / 113.69 / 162.64 mm3), the width makes no difference, and
@@ -2838,13 +2845,13 @@ def sheet_metal_corner_relief(
         every corner and read back (center_on_bend_lines changes the cut; add_filleted_corners is taken by square /
         rectangular reliefs and ignored by circular ones - reported as a problem). ratio_to_thickness is not offered: it
         built nothing for every dimension tried.
-    The part needs exactly one solid body with two-bend corners (NO_CORNERS otherwise). The result is checked: rebuild
+    The body needs corners of the chosen type (NO_CORNERS otherwise). The result is checked: rebuild
         error 0 (else the feature is taken out again), every corner read back with the relief type asked (a square
         relief reads back as rectangular and says so in `note`), the volume DOWN and the faces changed. Returns {feature, relief, corners_collected, definition{corner_count, corners[]},
         width, length, body_before, body_after, volume_before, volume_after, volume_change, problems[], verified}.
     Bumps state_version. Errors: INVALID_PARAMETER, MISSING_PARAMETER, NOT_SHEET_METAL, NO_CORNERS, CORNER_RELIEF_FAILED."""
     params: dict = {"relief": relief, "corner_type": corner_type}
-    for key, val in (("width", width), ("length", length), ("tangent_to_bend", tangent_to_bend),
+    for key, val in (("body", body), ("width", width), ("length", length), ("tangent_to_bend", tangent_to_bend),
                      ("center_on_bend_lines", center_on_bend_lines), ("add_filleted_corners", add_filleted_corners), ("fillet_diameter", fillet_diameter)):
         if val is not None:
             params[key] = val

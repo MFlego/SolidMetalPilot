@@ -35,7 +35,8 @@ HEM_TYPES = frozenset(("closed", "open", "tear_drop", "rolled"))          # 'dou
 HEM_POSITIONS = frozenset(("material_inside", "bend_outside"))
 CORNER_TYPES = frozenset(("overlap", "underlap", "butt"))                  # closed_corner.corner_type, convert.corner
 BREAK_CORNER_TYPES = frozenset(("fillet", "chamfer"))
-CORNER_RELIEF_TYPES = frozenset(("circular", "square", "tear", "obround", "rectangular"))      # the five built and measured on two-bend corners; the three-bend reliefs kill SolidWorks on them
+CORNER_RELIEF_TYPES = frozenset(("circular", "square", "tear", "obround", "rectangular"))      # the five built and measured on two-bend corners; the other three-bend reliefs kill SolidWorks on them
+CORNER_RELIEF_BEND_TYPES = frozenset(("two_bend", "three_bend"))          # corner_relief.corner_type; a three-bend corner takes the rectangular relief only (the one measured there)
 MITER_FLANGE_POSITIONS = frozenset(("material_inside", "material_outside", "bend_outside",
                                     "bend_centerline", "bend_sharp", "bend_tangent"))
 GUSSET_TYPES = frozenset(("rounded", "flat"))
@@ -58,7 +59,7 @@ STEP_LISTS = frozenset(("bend", "rip"))
 
 # schema covered_subset key -> frozenset (the contract test pairs them both ways)
 ENUM_SETS = {
-    "hem_types": HEM_TYPES, "hem_positions": HEM_POSITIONS, "corner_types": CORNER_TYPES, "corner_relief_types": CORNER_RELIEF_TYPES,
+    "hem_types": HEM_TYPES, "hem_positions": HEM_POSITIONS, "corner_types": CORNER_TYPES, "corner_relief_types": CORNER_RELIEF_TYPES, "corner_relief_bend_types": CORNER_RELIEF_BEND_TYPES,
     "break_corner_types": BREAK_CORNER_TYPES, "miter_flange_positions": MITER_FLANGE_POSITIONS,
     "gusset_types": GUSSET_TYPES, "gusset_dimension_schemes": GUSSET_SCHEMES, "bend_directions": BEND_DIRECTIONS,
     "lofted_thickness_sides": LOFTED_THICKNESS_SIDES, "lofted_facet_options": LOFTED_FACETS,
@@ -123,6 +124,7 @@ SPECS = {
         "tool": "sheet_metal_corner_relief", "producer": True,
         "fields": {
             "relief": O(_enum(CORNER_RELIEF_TYPES)), "width": O("len"), "length": O("len"),
+            "corner_type": O(_enum(CORNER_RELIEF_BEND_TYPES)), "body": O("str"),
             "tangent_to_bend": O("bool"), "center_on_bend_lines": O("bool"), "add_filleted_corners": O("bool"), "fillet_diameter": O("len"),
         },
         "rules": ["corner_relief"],
@@ -456,6 +458,11 @@ def _rule_corner_relief(node, label, errors):
         errors.append("%s: an obround relief needs 'width' and 'length' (a slot about twice as long as it is wide)." % label)
     if node.get("add_filleted_corners") is True and node.get("fillet_diameter") is None:
         errors.append("%s: add_filleted_corners needs 'fillet_diameter'." % label)
+    if node.get("corner_type") == "three_bend":
+        if rel != "rectangular":
+            errors.append("%s: a three_bend corner takes the 'rectangular' relief only (the one measured on three-bend corners)." % label)
+        if node.get("length") is None:
+            errors.append("%s: a three_bend corner needs 'length' (the side of the rectangular relief, e.g. the outer bend radius = inside radius + thickness)." % label)
 
 
 def _rule_move_face(node, label, errors):
