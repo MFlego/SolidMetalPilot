@@ -2107,8 +2107,10 @@ def sheet_metal_convert(
     Clicks are only ever posted to SolidWorks' own graphics window: when a window of another application covers the
     graphics area the call stops with GRAPHICS_COVERED (nothing is clicked; bring SolidWorks to the front).
     Errors (nothing is left open): MISSING_PARAMETER, FACE_NOT_FOUND, EDGE_NOT_FOUND (also 'ambiguous'),
-        SKETCH_NOT_FOUND, BEND_ZONES_DO_NOT_FIT (two bends closer than 2 x (radius + thickness), or a flange shorter
-        than radius + thickness: SolidWorks would fail the build and its OK handler can hang), PM_ALREADY_OPEN,
+        SKETCH_NOT_FOUND, BEND_ZONES_DO_NOT_FIT (two bends on one face closer than the sum of their take-ups, each
+        (radius + thickness) x tan(deflection / 2) - 2 x (radius + thickness) for right angles, much less for the
+        shallow bends of a jog - or a flange shorter than one take-up: SolidWorks would fail the build and its OK
+        handler can hang), PM_ALREADY_OPEN,
         DIALOG_BLOCKING, PM_NOT_OPENED, GRAPHICS_COVERED, WRONG_PICK, NOT_PICKABLE, PM_DIALOG, CONVERT_FAILED
         (rebuild error: the command is cancelled), PM_STUCK, NOT_CREATED."""
     params: dict = {"fixed_face": json.loads(fixed_face) if fixed_face.strip().startswith(("[", "{")) else fixed_face,

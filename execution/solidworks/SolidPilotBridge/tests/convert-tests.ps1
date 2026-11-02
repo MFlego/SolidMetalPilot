@@ -230,6 +230,22 @@ Test 'C14 soak: three build + convert + close cycles - no PropertyManager left o
     Fresh-Part; $grow = ((Sw).HandleCount - $before) / 3; "      soak: handles per cycle $([math]::Round($grow, 1))"; Assert ($grow -lt 150) "handle growth per cycle: $grow"
 }
 
+Test 'C16 a JOG converts: side walls that step inward 2 mm through a 45 degree slope = 3 right-angle bends + 4 jog bends of exactly 45 degrees (the bend-fit guard measures each bend''s deflection instead of assuming 90 degrees)' {
+    Fresh-Part
+    Ok (Invoke-Tool 'create_sketch' @{ plane = 'Top Plane' }) 'jog section sketch' | Out-Null
+    $seg = '[{"entity_type":"line","x1":-0.05,"y1":0,"x2":0.05,"y2":0},{"entity_type":"line","x1":0.05,"y1":0,"x2":0.05,"y2":-0.024},{"entity_type":"line","x1":0.05,"y1":-0.024,"x2":0.048,"y2":-0.026},{"entity_type":"line","x1":0.048,"y1":-0.026,"x2":0.048,"y2":-0.03},{"entity_type":"line","x1":0.048,"y1":-0.03,"x2":-0.048,"y2":-0.03},{"entity_type":"line","x1":-0.048,"y1":-0.03,"x2":-0.048,"y2":-0.026},{"entity_type":"line","x1":-0.048,"y1":-0.026,"x2":-0.05,"y2":-0.024},{"entity_type":"line","x1":-0.05,"y1":-0.024,"x2":-0.05,"y2":0}]'
+    Ok (Invoke-Tool 'add_sketch_entities' @{ segments = $seg }) 'jog section lines' | Out-Null
+    Ok (Invoke-Tool 'sketch_fully_define' @{}) 'jog section fully defined' | Out-Null
+    Ok (Invoke-Tool 'extrude_feature' @{ depth = 0.06; feature_type = 'boss'; mid_plane = $true }) 'jog block' | Out-Null
+    Ok (Invoke-Tool 'delete_face' @{ faces = '[[0,0,0.03],[0,-0.03,0.015]]' }) 'open top and front' | Out-Null
+    $steps = '[{"list":"bend","edges":[[-0.05,0,0],[0.05,0,0],[0,0.03,0]]},{"list":"bend","edges":[[-0.05,0,0.024],[0.05,0,0.024],[-0.048,0,0.026],[0.048,0,0.026]]}]'
+    $r = Rg (Ok (Invoke-Tool 'sheet_metal_convert' @{ fixed_face = '[0,0,0]'; steps = $steps; thickness = 0.0012; bend_radius = 0.0012; corner = 'underlap'; rip_gap = 0.0000762; overlap_ratio = 1; relief = 'tear'; k_factor = 0.46 }) 'convert the jogged tray')
+    Assert ($r.accepted -eq $true -and $r.feature_error -eq 0 -and $r.lists.bend_edges -eq 7) "result: $($r | ConvertTo-Json -Compress -Depth 4)"
+    Assert ((PmWindows) -eq 0) 'the PropertyManager must be closed'
+    $p = Params; $ang = @($p.bends | ForEach-Object { [math]::Round([double]$_.angle * 180 / [math]::PI, 3) })
+    Assert (@($ang | Where-Object { $_ -eq 90 }).Count -eq 3 -and @($ang | Where-Object { $_ -eq 45 }).Count -eq 4) "bend angles (deg): $($ang -join ', ')"
+}
+
 if ($Cover) {
 Test 'C15 a window of ANOTHER application over the graphics area is never clicked: the convert is refused (GRAPHICS_COVERED), post_click is refused (FOREIGN_WINDOW), the covering window receives 0 clicks' {
     Add-Type -AssemblyName System.Windows.Forms

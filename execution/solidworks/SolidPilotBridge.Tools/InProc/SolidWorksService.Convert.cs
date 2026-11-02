@@ -45,6 +45,7 @@ namespace SolidworksExecution.Services
             public double[] A, B;                      // bend edges: the end points (for the "do the bends fit" check)
             public string[] FaceKeys;                  // bend edges: the faces on both sides (centre + area as a key)
             public double[] FaceReach;                 // bend edges: how far each of those faces reaches away from the edge, in its plane (m)
+            public double Tan = 1.0;                   // bend edges: tan(deflection / 2) of the bend the two faces make (1 for a right angle: the take-up of a bend is (r + t) x Tan on each side of its virtual sharp)
         }
 
         private sealed class ConvertPlan
@@ -197,23 +198,34 @@ namespace SolidworksExecution.Services
             try
             {
                 var adj = e.GetTwoAdjacentFaces2() as object[]; if (adj == null) return;
-                var keys = new List<string>(); var reach = new List<double>();
+                var keys = new List<string>(); var reach = new List<double>(); var dirs = new List<double[]>();
+                var ab = Sub(t.B, t.A); double abLen = Len(ab); var abU = abLen > 1e-12 ? new[] { ab[0] / abLen, ab[1] / abLen, ab[2] / abLen } : new[] { 1.0, 0.0, 0.0 };
                 foreach (var o in adj)
                 {
                     var f = o as IFace2; if (f == null) continue;
                     var bx = f.GetBox() as double[]; if (bx == null) continue;
                     keys.Add(((bx[0] + bx[3]) / 2 * 1e4).ToString("0", CultureInfo.InvariantCulture) + "," + ((bx[1] + bx[4]) / 2 * 1e4).ToString("0", CultureInfo.InvariantCulture) + "," + ((bx[2] + bx[5]) / 2 * 1e4).ToString("0", CultureInfo.InvariantCulture) + "," + (f.GetArea() * 1e8).ToString("0", CultureInfo.InvariantCulture));
-                    double far = 0;
-                    foreach (var eo in (f.GetEdges() as object[]) ?? new object[0]) { var fe = eo as IEdge; if (fe == null) continue; foreach (var fr in new[] { 0.0, 0.5, 1.0 }) far = Math.Max(far, DistToLine(EdgeAt(fe, fr), t.A, t.B)); }
+                    double far = 0; double[] farPt = null;
+                    foreach (var eo in (f.GetEdges() as object[]) ?? new object[0]) { var fe = eo as IEdge; if (fe == null) continue; foreach (var fr in new[] { 0.0, 0.5, 1.0 }) { var pt = EdgeAt(fe, fr); double d = DistToLine(pt, t.A, t.B); if (d > far) { far = d; farPt = pt; } } }
                     reach.Add(far);
+                    // the direction in which this face leaves the edge (the part of the vector to its farthest point that is perpendicular to the edge): two such directions give the bend's deflection
+                    if (farPt != null) { var v = Sub(farPt, t.A); double al = v[0] * abU[0] + v[1] * abU[1] + v[2] * abU[2]; v = new[] { v[0] - al * abU[0], v[1] - al * abU[1], v[2] - al * abU[2] }; double vl = Len(v); if (vl > 1e-9) dirs.Add(new[] { v[0] / vl, v[1] / vl, v[2] / vl }); }
                 }
                 t.FaceKeys = keys.ToArray(); t.FaceReach = reach.ToArray();
+                if (dirs.Count == 2)
+                {
+                    // angle between the two flats alpha (180 = the sheet runs straight on, 90 = a box corner); deflection phi = 180 - alpha. A right angle gives Tan = 1 (the rule used until now); a jog's shallow bends take up less
+                    double dot = Math.Max(-1.0, Math.Min(1.0, dirs[0][0] * dirs[1][0] + dirs[0][1] * dirs[1][1] + dirs[0][2] * dirs[1][2]));
+                    double phi = Math.PI - Math.Acos(dot);
+                    phi = Math.Max(10.0 * Math.PI / 180, Math.Min(170.0 * Math.PI / 180, phi));
+                    t.Tan = Math.Tan(phi / 2);
+                }
             }
             catch (COMException) { }
         }
 
-        // A bend takes up s = r + t of the flat on each side of the virtual sharp (90 degrees). A face between two parallel bend edges needs D > 2 s, a face with one bend edge needs to reach farther than s from
-        // it. When they do not fit SolidWorks fails the build ("Unable to thicken the surface") and - seen 2026-10-27 - its OK handler can then spin for good: so the request is refused BEFORE anything is
+        // A bend takes up s = (r + t) x tan(deflection / 2) of the flat on each side of the virtual sharp (a right angle: r + t; a jog's shallow bends: less - the deflection is read from the two faces at the
+        // edge, FaceGeometryAround). A face between two parallel bend edges needs D > s1 + s2, a face with one bend edge needs to reach farther than s from it. When they do not fit SolidWorks fails the build ("Unable to thicken the surface") and - seen 2026-10-27 - its OK handler can then spin for good: so the request is refused BEFORE anything is
         // opened. Returns a description of the first violation, or null.
         private static string BendZonesProblem(ConvertPlan plan, double thickness, double radius)
         {
@@ -227,7 +239,8 @@ namespace SolidworksExecution.Services
                 {
                     int idx = Array.IndexOf(ts[0].FaceKeys, kv.Key); double reach = idx >= 0 && idx < ts[0].FaceReach.Length ? ts[0].FaceReach[idx] : double.MaxValue;
                     // a single bend edge on a face that is itself bounded by other bends is covered by the pair rule; here only a free flange matters
-                    if (reach <= s + 1e-5) return ts[0].Label + ": the face beyond it reaches only " + (reach * 1000).ToString("0.##", CultureInfo.InvariantCulture) + " mm from the edge, but a bend with inside radius " + (radius * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm and thickness " + (thickness * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm takes up " + (s * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm of it";
+                    double s0 = s * ts[0].Tan;
+                    if (reach <= s0 + 1e-5) return ts[0].Label + ": the face beyond it reaches only " + (reach * 1000).ToString("0.##", CultureInfo.InvariantCulture) + " mm from the edge, but a bend with inside radius " + (radius * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm and thickness " + (thickness * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm takes up " + (s0 * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm of it";
                     continue;
                 }
                 for (int i = 0; i < ts.Count; i++)
@@ -237,7 +250,8 @@ namespace SolidworksExecution.Services
                         var cx = new[] { di[1] * dj[2] - di[2] * dj[1], di[2] * dj[0] - di[0] * dj[2], di[0] * dj[1] - di[1] * dj[0] };
                         if (Len(cx) / (li * lj) > 0.05) continue;                                   // not parallel: they do not run along the same strip of the face
                         double dist = DistToLine(ts[j].Mid, ts[i].A, ts[i].B);
-                        if (dist <= 2 * s + 1e-5) return ts[i].Label + " and " + ts[j].Label + " are only " + (dist * 1000).ToString("0.##", CultureInfo.InvariantCulture) + " mm apart on the same face, but two bends of inside radius " + (radius * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm and thickness " + (thickness * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm need 2 x " + (s * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " = " + (2 * s * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm between them";
+                        double need = s * (ts[i].Tan + ts[j].Tan);                                   // two right-angle bends: 2 s; a jog's two shallow bends need much less
+                        if (dist <= need + 1e-5) return ts[i].Label + " and " + ts[j].Label + " are only " + (dist * 1000).ToString("0.##", CultureInfo.InvariantCulture) + " mm apart on the same face, but two bends of inside radius " + (radius * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm and thickness " + (thickness * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm (deflections " + (2 * Math.Atan(ts[i].Tan) * 180 / Math.PI).ToString("0.#", CultureInfo.InvariantCulture) + " and " + (2 * Math.Atan(ts[j].Tan) * 180 / Math.PI).ToString("0.#", CultureInfo.InvariantCulture) + " deg) need " + (need * 1000).ToString("0.###", CultureInfo.InvariantCulture) + " mm between them";
                     }
             }
             return null;
@@ -303,6 +317,16 @@ namespace SolidworksExecution.Services
                 if (last != null && m.Zip(last, (x, y) => Math.Abs(x - y)).Max() < 1e-9) stable++; else stable = 0;
                 last = m; return stable >= 6 && (graphics == IntPtr.Zero || PmUi.WindowAt(probe[0], probe[1]) == graphics);
             }, 4000);
+        }
+
+        // Zoom the active view onto a MODEL point (half = half the width of the zoom box, m). ModelDoc2.ViewZoomTo2 takes its box in VIEW coordinates measured from the model origin (x right, y UP, z toward
+        // the viewer), not in model coordinates (calibrated 2026-10-31: model coordinates zoomed to the wrong place): the point is rotated with the view's own transform (ArrayData 0..8, column-major;
+        // Project() adds m[1], m[4], m[7] as 'down' pixels, so the up coordinate is the negative) and the point then lands in the middle of the visible box.
+        private static void ZoomToModelPoint(IModelDoc2 doc, double[] p, double half)
+        {
+            var m = (double[])((IMathTransform)((IModelView)doc.ActiveView).Transform).ArrayData;
+            double qx = m[0] * p[0] + m[3] * p[1] + m[6] * p[2], qy = m[1] * p[0] + m[4] * p[1] + m[7] * p[2], qz = m[2] * p[0] + m[5] * p[1] + m[8] * p[2];
+            doc.ViewZoomTo2(qx - half, -qy - half, qz - half, qx + half, -qy + half, qz + half);
         }
 
         private string ShowView(IModelDoc2 doc, string name)
@@ -439,6 +463,17 @@ namespace SolidworksExecution.Services
                             ViewCache vc; var ck = view + "#" + string.Join(",", ((double[])((IMathTransform)mv.Transform).ArrayData).Take(13).Select(v => v.ToString("G6", CultureInfo.InvariantCulture)).ToArray());
                             if (!caches.TryGetValue(ck, out vc)) { vc = BuildViewCache(doc, plan, view); caches[ck] = vc; }
                             // candidate pixels along the target on screen; a pixel is good when the nearest OTHER edge is far away (hard against another edge, a click could select that one instead)
+                            bool zoomedHere = false;
+                            for (int attempt = 0; attempt < 2 && !done; attempt++)
+                            {
+                            if (attempt == 1)
+                            {
+                                // nothing reached 4 px at fit zoom (the two creases of a 2 mm jog are 3 px apart on a 500 mm part): zoom ONTO the target and look again
+                                ZoomToModelPoint(doc, t.Samples[0], 0.012); PmUi.Pump(300); SettleView(doc, graphics, centre);
+                                mv = (IModelView)doc.ActiveView; zoomedHere = true;
+                                ck = view + "#zoom#" + string.Join(",", ((double[])((IMathTransform)mv.Transform).ArrayData).Take(13).Select(v => v.ToString("G6", CultureInfo.InvariantCulture)).ToArray());
+                                if (!caches.TryGetValue(ck, out vc)) { vc = BuildViewCache(doc, plan, view); caches[ck] = vc; }
+                            }
                             var scored = new List<Tuple<double, int[], double>>();
                             for (int si = 0; si < t.Samples.Length; si++)
                             {
@@ -446,9 +481,12 @@ namespace SolidworksExecution.Services
                                 scored.Add(Tuple.Create(ClearanceExcludingSelf(px, vc, t), px, PickFractions[si]));
                             }
                             scored = scored.OrderByDescending(c => c.Item1).Take(5).ToList();
+                            // 4 px of clearance is the comfortable margin: when the fitted view has none, zoom in (attempt 1); 2 px is the floor either way (SolidWorks takes the edge NEAREST the cursor and every
+                            // pick is verified against the intended edge afterwards: a wrong pick cancels the whole command)
+                            if (attempt == 0 && (scored.Count == 0 || scored[0].Item1 < 4.0)) continue;
                             foreach (var c in scored)
                             {
-                                if (c.Item1 < 4) continue;
+                                if (c.Item1 < 2.0) continue;
                                 PmUi.PumpUntil(() => PmUi.WindowAt(c.Item2[0], c.Item2[1]) == graphics, 2000);
                                 var atPx = PmUi.WindowAt(c.Item2[0], c.Item2[1]);
                                 if (atPx != graphics) { tried.Add(view + "@" + c.Item2[0] + "," + c.Item2[1] + " covered by " + PmUi.Who(atPx)); continue; }      // never click what is not the graphics area: a window of another application may be in front
@@ -464,6 +502,8 @@ namespace SolidworksExecution.Services
                                     throw new ToolFailure("WRONG_PICK", t.Label + ": the click added " + (last == null ? "nothing selectable" : last.ToString(Newtonsoft.Json.Formatting.None)) + " instead of the intended " + (t.IsEdge ? "edge" : "sketch") + " (view " + view + "); the command was cancelled.");
                                 }
                             }
+                            }                                                                                       // attempt loop
+                            if (zoomedHere) { doc.ViewZoomtofit2(); PmUi.Pump(300); }                               // back to the fitted view for the next target
                             if (done) break;
                         }
                         if (!done) throw new ToolFailure("NOT_PICKABLE", t.Label + " could not be picked from any view (" + string.Join(", ", tried.Take(12).ToArray()) + "). It may be hidden behind a face or coincide with another edge on screen in every view tried; pass other `views`.");
