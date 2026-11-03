@@ -271,6 +271,26 @@ namespace SolidworksExecution.Services
                 if (feat == null) throw new ToolFailure("FEATURE_NOT_FOUND", "No feature named '" + name + "'. Use action=list for the names.");
                 object def = feat.GetDefinition();
                 if (def == null) throw new ToolFailure("NO_DEFINITION", "'" + name + "' has no editable definition.");
+                // dumping EVERY property of a flat-pattern definition killed SolidWorks (Phase 9 retry, 2026-11-02: `feature_data get Flat-Pattern54` on a part just opened from a file; the four options below are what sheet_metal_params get / flat_pattern_control read safely): a flat pattern reads and writes only those
+                var flatDef = def as IFlatPatternFeatureData;
+                if (flatDef != null)
+                {
+                    if (action == "get")
+                        return new JObject
+                        {
+                            ["feature"] = feat.Name, ["type"] = feat.GetTypeName2(), ["definition"] = "IFlatPatternFeatureData",
+                            ["note"] = "only the four flat-pattern options are read: dumping every property of this definition crashed SolidWorks",
+                            ["properties"] = new JObject
+                            {
+                                ["CornerTreatment"] = new JObject { ["value"] = flatDef.CornerTreatment, ["access"] = "rw" }, ["SimplifyBends"] = new JObject { ["value"] = flatDef.SimplifyBends, ["access"] = "rw" },
+                                ["MergeFace"] = new JObject { ["value"] = flatDef.MergeFace, ["access"] = "rw" }, ["ShowSlitInCornerRelief"] = new JObject { ["value"] = flatDef.ShowSlitInCornerRelief, ["access"] = "rw" },
+                            }
+                        };
+                    var flatProps = AsObject(p["properties"], "properties"); var flatCalls = AsArray(p["calls"], "calls");
+                    string[] safe = { "cornertreatment", "simplifybends", "mergeface", "showslitincornerrelief" };
+                    if ((flatCalls != null && flatCalls.Count > 0) || (flatProps != null && flatProps.Properties().Any(x => !safe.Contains(x.Name.ToLowerInvariant()))))
+                        throw new ToolFailure("UNSAFE_FEATURE", "'" + name + "' is a flat-pattern feature: only CornerTreatment, SimplifyBends, MergeFace and ShowSlitInCornerRelief are written (other properties and method calls on this definition are not safe); use flat_pattern_control for the flat options.");
+                }
                 var iface = DefinitionInterface(feat, def);
                 if (iface == null) throw new ToolFailure("UNKNOWN_DEFINITION", "No *FeatureData interface recognised for feature type '" + feat.GetTypeName2() + "'.");
 

@@ -404,14 +404,14 @@ namespace SolidworksExecution.Services
                 }
                 if (doc.SketchManager.ActiveSketch != null) doc.SketchManager.InsertSketch(true);      // a sketch still open (the last rip sketch, usually) would swallow the command
 
-                var problems = new JArray(); var picks = new JArray(); var hidden = new List<IBody2>(); bool pmOpen = false; DialogWatchdog watch = null;
+                var problems = new JArray(); var picks = new JArray(); var hidden = new List<IBody2>(); var hiddenPrints = new List<double[]>(); bool pmOpen = false; DialogWatchdog watch = null;
                 int convertsBefore = TopFeatures(doc).Count(f => f.GetTypeName2() == "SolidToSheetMetal");
                 ExecLog.Write("convert: plan ready - " + plan.Targets.Count + " picks, " + plan.Polylines.Count + " edges mapped");
                 try
                 {
                     // other visible bodies would sit in front of the picks (and could be hit instead): hide them for the duration
                     if (plan.HideOthers)
-                        foreach (var b in AllBodies(part, true)) if (!SameBody(b, plan.Body)) { b.HideBody(true); hidden.Add(b); }
+                        foreach (var b in AllBodies(part, true)) if (!SameBody(b, plan.Body)) { hiddenPrints.Add(BodyPrint(b)); b.HideBody(true); hidden.Add(b); }
                     doc.ClearSelection2(true);
                     var sd = ((ISelectionMgr)doc.SelectionManager).CreateSelectData(); sd.Mark = 1;
                     if (!((IEntity)plan.FixedFace).Select4(false, sd)) throw new ToolFailure("SELECTION_FAILED", "Could not select the fixed face.");
@@ -532,10 +532,12 @@ namespace SolidworksExecution.Services
                     if (converts.Count <= convertsBefore) throw new ToolFailure("NOT_CREATED", "The PropertyManager closed but no Convert to Sheet Metal feature exists. " + string.Join(" / ", watch.Messages.ToArray()));
                     var feat = converts[converts.Count - 1];
                     if (plan.ReliefRatio.HasValue) { try { ApplyConvertReliefRatio(feat, doc, plan.ReliefRatio.Value, problems); } catch (Exception ex) { problems.Add("relief ratio: " + ex.Message); } }
+                    try { ApplyConvertOwnParameters(feat, doc, plan, problems); } catch (Exception ex) { problems.Add("own sheet parameters: " + ex.Message); }
                     int err = FeatureError(feat);
                     var def = DefinitionValues(feat, doc);
                     VerifyConvertSettings(plan, def, problems);
-                    if (plan.KFactor.HasValue) { try { if (!ApplyGlobalKFactor(doc, plan.KFactor.Value)) problems.Add("the global K-factor " + plan.KFactor.Value + " could not be applied"); } catch (Exception ex) { problems.Add("K-factor: " + ex.Message); } }
+                    // the NEW body's own Sheet-Metal feature (the last one in the tree): a later body starts at the template's K 0.5 (measured 2026-11-02: three of four bodies kept 0.5 while the first got 0.44, ears 0.11 mm apart in the flat)
+                    if (plan.KFactor.HasValue) { try { if (!ApplyGlobalKFactor(doc, plan.KFactor.Value, TopFeatures(doc).LastOrDefault(sf => sf.GetTypeName2() == "SheetMetal"))) problems.Add("the global K-factor " + plan.KFactor.Value + " could not be applied"); } catch (Exception ex) { problems.Add("K-factor: " + ex.Message); } }
                     var res = new JObject { ["accepted"] = true, ["feature"] = feat.Name, ["feature_error"] = err, ["lists"] = summary, ["definition"] = def, ["picks"] = picks };
                     try { res["sheet_metal"] = SheetMetalSummary(doc); } catch (Exception ex) { problems.Add("sheet-metal summary: " + ex.Message); }
                     if (problems.Count > 0) res["problems"] = problems;
@@ -552,9 +554,41 @@ namespace SolidworksExecution.Services
                 {
                     if (watch != null) watch.Dispose();
                     foreach (var b in hidden) { try { b.HideBody(false); } catch (COMException) { } }
+                    // the COM wrappers above go STALE when the Convert rebuilds the part (measured 2026-11-02, Phase 9 retry 2: the ears, then the cover's surface stayed hidden after a Convert and the next Convert's
+                    // picks found nothing): show again, by fingerprint (face / edge count + box), every hidden body the picker hid
+                    try
+                    {
+                        if (hiddenPrints.Count > 0)
+                            foreach (var b in AllBodies(part, false))
+                            {
+                                // Body2.Visible reads TRUE for a body that is still not drawn (measured: tray and ears invisible with every body 'Visible'), and HideBody(false) alone does not repaint it:
+                                // hide then show is what restores the display
+                                if (hiddenPrints.Any(p => PrintMatches(p, b))) { try { b.HideBody(true); b.HideBody(false); } catch (COMException) { } }
+                            }
+                    }
+                    catch (Exception) { }
                     try { doc.ClearSelection2(true); } catch (COMException) { }
                 }
             });
+        }
+
+        // a body's identity across a rebuild: face count, edge count and its box (the other bodies of a Convert do not change)
+        private static double[] BodyPrint(IBody2 b)
+        {
+            var bx = b.GetBodyBox() as double[]; var p = new double[8]; p[0] = b.GetFaceCount(); p[1] = b.GetEdgeCount();
+            if (bx != null) for (int i = 0; i < 6; i++) p[2 + i] = bx[i];
+            return p;
+        }
+
+        private static bool PrintMatches(double[] p, IBody2 b)
+        {
+            try
+            {
+                var q = BodyPrint(b); if (Math.Abs(p[0] - q[0]) > 0.5 || Math.Abs(p[1] - q[1]) > 0.5) return false;
+                for (int i = 2; i < 8; i++) if (Math.Abs(p[i] - q[i]) > 1e-7) return false;
+                return true;
+            }
+            catch (COMException) { return false; }
         }
 
         // two COM wrappers for the same body are different objects: compare by their faces' count and first face box
@@ -627,6 +661,27 @@ namespace SolidworksExecution.Services
             {
                 var d = (IConvertSolidFeatureData)def; d.OverrideDefaultAutoReliefParameters = true; d.ReliefRatio = ratio;
                 if (!feat.ModifyDefinition(def, doc, null)) problems.Add("ModifyDefinition refused the relief ratio " + ratio.ToString("0.####", CultureInfo.InvariantCulture));
+            }
+            finally { if (access) ReleaseSelections(iface, def); }
+        }
+
+        // A SECOND body converted into a part that already has sheet-metal parameters is built with the PART's thickness and radius while the PropertyManager keeps "use the part's parameters" on (measured
+        // 2026-11-02 in the Phase 9 retry: a cover asked for 1.0 / 1.4 mm after a 1.2 / 1.2 mm tray came out 1.2 / 1.2 and the PM boxes did not take the values). The created feature's definition does accept
+        // OverrideDefaultSheetMetalParameters + SheetThickness + BendRadius (+ ReverseThickness) through ModifyDefinition - the same settings the user's own file carries - so that is where a different
+        // thickness / radius / thickness side of a later body goes. Nothing happens when the feature already carries what the request asked for.
+        private void ApplyConvertOwnParameters(IFeature feat, IModelDoc2 doc, ConvertPlan plan, JArray problems)
+        {
+            object def = feat.GetDefinition(); var iface = typeof(IConvertSolidFeatureData); bool access = AccessSelections(iface, def, doc);
+            try
+            {
+                var d = (IConvertSolidFeatureData)def;
+                bool differs = (plan.Thickness.HasValue && Math.Abs(d.SheetThickness - plan.Thickness.Value) > 1e-7) || (plan.Radius.HasValue && Math.Abs(d.BendRadius - plan.Radius.Value) > 1e-7) || (plan.Reverse.HasValue && d.ReverseThickness != plan.Reverse.Value);
+                if (!differs) return;
+                d.OverrideDefaultSheetMetalParameters = true;
+                if (plan.Thickness.HasValue) d.SheetThickness = plan.Thickness.Value;
+                if (plan.Radius.HasValue) d.BendRadius = plan.Radius.Value;
+                if (plan.Reverse.HasValue) d.ReverseThickness = plan.Reverse.Value;
+                if (!feat.ModifyDefinition(def, doc, null)) problems.Add("ModifyDefinition refused this body's own thickness / radius");
             }
             finally { if (access) ReleaseSelections(iface, def); }
         }

@@ -1741,7 +1741,9 @@ def feature_data(
         PositionType, GapDistance, ReliefTearType; EdgeBend1 [OneBend] -> UseDefaultBendAllowance,
         BendAllowanceType (2 = K-factor), KFactor (a PER-BEND override); Closed Corner1 -> CornerType
         (1 butt, 2 overlap, 3 underlap), GapDistance, OverlapUnderlapRatio, OpenBendRegion; Flat-Pattern1 ->
-        CornerTreatment, MergeFace, SimplifyBends, ShowSlitInCornerRelief; Sheet-Metal1 -> Thickness,
+        CornerTreatment, MergeFace, SimplifyBends, ShowSlitInCornerRelief (a flat pattern reads and writes ONLY
+        these four: UNSAFE_FEATURE otherwise, because a full property dump of a flat pattern crashed SolidWorks);
+        Sheet-Metal1 -> Thickness,
         BendRadius, KFactor, AutoReliefType, ReliefRatio.
     action='set': properties = '{"OffsetDistance": 0.035}' (a JSON string; names case-insensitive; numbers,
         booleans and strings only), calls = '[{"method":"SetOverrideDefaultParameter2","args":[1,true]}]'
@@ -2235,7 +2237,7 @@ def sketch_center_rectangle(
 # Tool: sketch_fully_define
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
-def sketch_fully_define(sketch: str = "") -> str:
+def sketch_fully_define(sketch: str = "", relations: str = "none", relate: str = "") -> str:
     """FULLY DEFINE a sketch - the user's rule is that EVERY sketch is fully defined, even a random hole sketch. Call it
     right after the sketch's entities (create_sketch + add_sketch_entities) and before the feature that uses the sketch;
     `sketch` = the name of an earlier sketch to open and define (default: the ACTIVE sketch). The sketch stays active.
@@ -2244,13 +2246,29 @@ def sketch_fully_define(sketch: str = "") -> str:
     dimension SolidWorks makes driven (redundant) is deleted again and a relation that would over-define is undone, so
     the sketch ends at constrained_status 3. (ISketchManager.FullyDefineSketch stops half way, measured, hence the
     tool.) Splines / ellipses are reported in `problems` (their points are not dimensioned).
+    RELATIONS FIRST (the MASTER SKETCH rule: relations cut the number of dimensions): relations='first' adds, before any
+    dimension, a construction centre line on the Y axis (from the origin, ended on the top line) with a SYMMETRIC relation
+    for every mirrored point pair and a horizontal / vertical relation for every axis-aligned line, then dimensions
+    only what is left; relations='only' stops after the relations (the sketch is still under defined: add your
+    design-intent dimensions with add_dimension, then call again with the default to close the rest). `relate` = a JSON
+    array of explicit relations resolved by sketch coordinates (metres): [{"type": "vertical_points", "a": [x, y], "b":
+    [x, y]}, ...]; types: horizontal, vertical (a = a line), fixed (a), coincident, vertical_points, horizontal_points
+    (a, b = points), on_line (a point, b line), midpoint (a point, b line), equal, collinear, parallel, perpendicular,
+    tangent (a, b = lines / arcs), symmetric (a, b = points, axis = a line). A point is the sketch point nearest to its
+    coordinates (20 um), a line the nearest segment (10 um); a relation that over-defines is undone and listed in
+    `relations_skipped`.
     Returns {sketch, status_before, constrained_status, constrained, dimensions[{name, value}], relations[],
-    redundant_dimensions_removed, problems, verified}; verified = fully defined. Errors: NO_ACTIVE_SKETCH,
-    SKETCH_NOT_FOUND, SKETCH_ALREADY_ACTIVE (another sketch is active). The graph door does it for you:
-    `fully_define_sketches: true` on the graph (or `fully_define: true` on a sketch / hole node). Bumps state_version."""
-    params = {}
+    geometric_relations[], relations_skipped[], relation_count, redundant_dimensions_removed, problems, verified};
+    verified = fully defined. Errors: NO_ACTIVE_SKETCH, SKETCH_NOT_FOUND, SKETCH_ALREADY_ACTIVE (another sketch is
+    active), INVALID_PARAMETER. The graph door does it for you: `fully_define_sketches: true` on the graph (or
+    `fully_define: true` on a sketch / hole node). Bumps state_version."""
+    params: dict = {}
     if sketch:
         params["sketch"] = sketch
+    if relations and relations != "none":
+        params["relations"] = relations
+    if relate and relate.strip():
+        params["relate"] = json.loads(relate)
     return _call("sketch_fully_define", params)
 
 

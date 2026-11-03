@@ -246,6 +246,33 @@ Test 'C16 a JOG converts: side walls that step inward 2 mm through a 45 degree s
     Assert (@($ang | Where-Object { $_ -eq 90 }).Count -eq 3 -and @($ang | Where-Object { $_ -eq 45 }).Count -eq 4) "bend angles (deg): $($ang -join ', ')"
 }
 
+Test 'C17 a SECOND body with its OWN thickness and radius (master-sketch build, 2026-11-02): ONE two-contour master section (tray with a 20 degree jog, cover top + skirts) -> ONE surface extrusion -> tray 1.2 / 1.2 mm, then cover 1.0 / 1.4 mm: the cover feature carries ITS thickness and radius (the part''s 1.2 mm used to win), the cover is 430 wide outside, the jogged tray (step 1.1 on 1.2) converts' {
+    Fresh-Part
+    function L($a, $b) { @{ entity_type = 'line'; x1 = $a[0]; y1 = $a[1]; x2 = $b[0]; y2 = $b[1] } }
+    $h = 0.215; $f = -0.022225; $s = 0.0011028; $jx = 0.2139; $jy = 0.004125; $wt = 0.019825; $ct = 0.022225; $sk = 0.004225
+    Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'master sketch' | Out-Null
+    $segs = @((L @(-$h, $f) @($h, $f)), (L @($h, $f) @($h, $s)), (L @($h, $s) @($jx, $jy)), (L @($jx, $jy) @($jx, $wt)), (L @(-$h, $f) @(-$h, $s)), (L @(-$h, $s) @(-$jx, $jy)), (L @(-$jx, $jy) @(-$jx, $wt)),
+              (L @(-$h, $ct) @($h, $ct)), (L @($h, $ct) @($h, $sk)), (L @(-$h, $ct) @(-$h, $sk)))
+    Ok (Invoke-Tool 'add_sketch_entities' @{ segments = $segs }) 'section' | Out-Null
+    $d = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{ relations = 'first'; relate = @(@{ type = 'collinear'; a = @(0.215, -0.01); b = @(0.215, 0.015) }) }) 'master relations first'); Assert ($d.verified -eq $true -and @($d.dimensions).Count -le 9) "master: $(@($d.dimensions).Count) dimensions"
+    Ok (Invoke-Tool 'edit_feature' @{ feature_name = $d.sketch; action = 'rename'; new_name = 'MASTER_SECTION' }) 'rename the master' | Out-Null
+    $e = Rg (Ok (Invoke-Tool 'surface_extrude' @{ sketch = 'MASTER_SECTION'; depth = 0.3; reverse = $true }) 'both surfaces'); Assert ($e.surface_bodies -eq 2) "two surface bodies from one extrusion: $($e.surface_bodies)"
+    $tray = '[{"list":"bend","edges":[[-0.215,-0.022225,-0.15],[0.215,-0.022225,-0.15]]},{"list":"bend","edges":[[-0.215,0.0011028,-0.15],[0.215,0.0011028,-0.15]]},{"list":"bend","edges":[[-0.2139,0.004125,-0.15],[0.2139,0.004125,-0.15]]}]'
+    $t = Rg (Ok (Invoke-Tool 'sheet_metal_convert' @{ fixed_face = '[0,-0.022225,-0.15]'; steps = $tray; thickness = 0.0012; bend_radius = 0.0012; k_factor = 0.44; reverse_thickness = 'off'; corner = 'underlap'; rip_gap = 0.0000762; overlap_ratio = 1; relief = 'rectangular' }) 'convert the jogged tray')
+    Assert ($t.accepted -eq $true -and $t.feature_error -eq 0 -and $t.lists.bend_edges -eq 6) "tray: $($t | ConvertTo-Json -Compress -Depth 4)"
+    $cv = '[{"list":"bend","edges":[[-0.215,0.022225,-0.15],[0.215,0.022225,-0.15]]}]'
+    $c = Rg (Ok (Invoke-Tool 'sheet_metal_convert' @{ fixed_face = '[0,0.022225,-0.15]'; steps = $cv; thickness = 0.001; bend_radius = 0.0014; k_factor = 0.44; reverse_thickness = 'on'; corner = 'underlap'; rip_gap = 0.0000762; overlap_ratio = 1; relief = 'rectangular' }) 'convert the cover')
+    Assert ($c.accepted -eq $true -and $c.feature_error -eq 0) "cover: $($c | ConvertTo-Json -Compress -Depth 4)"
+    Assert ([math]::Abs([double]$c.definition.SheetThickness - 0.001) -lt 1e-9 -and [math]::Abs([double]$c.definition.BendRadius - 0.0014) -lt 1e-9) "the cover feature must carry 1.0 / 1.4 mm: $($c.definition.SheetThickness) / $($c.definition.BendRadius)"
+    Assert ($c.verified -eq $true) "the cover convert is verified (no problems): $($c.problems -join '; ')"
+    # each body has ITS OWN K-factor (the new body's Sheet-Metal feature): a later body used to stay at the template's 0.5
+    $sms = @((Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'list' }) 'features')).features | Where-Object { $_.type -eq 'SheetMetal' })
+    Assert ($sms.Count -ge 2) "two Sheet-Metal features expected, got $($sms.Count)"
+    foreach ($sm in $sms) { $k = [double](Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'get'; feature = $sm.name }) "get $($sm.name)")).properties.KFactor.value; Near $k 0.44 1e-9 "K-factor of $($sm.name)" }
+    # nothing the picker hid stays hidden: both bodies are listed as visible solids
+    $bd = Rg (Ok (Invoke-Tool 'analyze_model' @{ analysis_type = 'bodies' }) 'bodies'); Assert (@($bd.bodies).Count -eq 2) "two solid bodies expected after the two Converts: $(@($bd.bodies).Count)"
+}
+
 if ($Cover) {
 Test 'C15 a window of ANOTHER application over the graphics area is never clicked: the convert is refused (GRAPHICS_COVERED), post_click is refused (FOREIGN_WINDOW), the covering window receives 0 clicks' {
     Add-Type -AssemblyName System.Windows.Forms

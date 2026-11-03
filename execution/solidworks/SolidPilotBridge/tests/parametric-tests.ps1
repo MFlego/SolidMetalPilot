@@ -155,6 +155,25 @@ Test 'P03d sketch_fully_define (user rule: EVERY sketch fully defined, even hole
     Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'sketch' | Out-Null; Fail (Invoke-Tool 'sketch_fully_define' @{ sketch = 'Sketch99' }) 'SKETCH_ALREADY_ACTIVE' 'another sketch is active' | Out-Null
 }
 
+Test 'P03d2 sketch_fully_define relations=first / only + relate (MASTER SKETCH rule 2026-11-02: relations cut dimensions): a two-contour master section (tray with a jog + cover) needs 24 origin dimensions with relations=none but at most 10 with relations=first (a construction centre line on the Y axis, symmetric pairs, horizontal / vertical lines), only leaves it under defined, an explicit collinear relation removes one more dimension, a bogus mode is refused' {
+    function MasterSegs {
+        $h = 0.215; $f = -0.022225; $s = 0.001103; $jx = 0.2139; $jy = 0.004125; $wt = 0.020725; $ct = 0.022225; $sk = 0.004225
+        function L($a, $b) { @{ entity_type = 'line'; x1 = $a[0]; y1 = $a[1]; x2 = $b[0]; y2 = $b[1] } }
+        @((L @(-$h, $f) @($h, $f)), (L @($h, $f) @($h, $s)), (L @($h, $s) @($jx, $jy)), (L @($jx, $jy) @($jx, $wt)), (L @(-$h, $f) @(-$h, $s)), (L @(-$h, $s) @(-$jx, $jy)), (L @(-$jx, $jy) @(-$jx, $wt)),
+          (L @(-$h, $ct) @($h, $ct)), (L @($h, $ct) @($h, $sk)), (L @(-$h, $ct) @(-$h, $sk)))
+    }
+    function Section { Fresh-Part; Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane'; on_face = $false; face_x = 0; face_y = 0; face_z = 0 }) 'sketch' | Out-Null; Ok (Invoke-Tool 'add_sketch_entities' @{ segments = (MasterSegs) }) 'section' | Out-Null }
+    Section; $n = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{}) 'relations none'); Assert ($n.verified -eq $true -and @($n.dimensions).Count -eq 24) "origin-only: 24 dimensions expected, got $(@($n.dimensions).Count)"
+    Section; $f = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{ relations = 'first' }) 'relations first')
+    Assert ($f.verified -eq $true -and $f.constrained_status -eq 3) "relations first not fully defined: $($f | ConvertTo-Json -Compress -Depth 5)"; Assert (@($f.dimensions).Count -le 10) "relations first: at most 10 dimensions, got $(@($f.dimensions).Count)"
+    Assert ((@($f.geometric_relations) -join ' ') -match 'symmetric' -and (@($f.geometric_relations) -join ' ') -match 'vertical' -and (@($f.geometric_relations) -join ' ') -match 'horizontal') "the symmetric / vertical / horizontal relations are listed: $(@($f.geometric_relations) -join '; ')"
+    Section; $o = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{ relations = 'only' }) 'relations only'); Assert ($o.verified -eq $false -and @($o.dimensions).Count -eq 0 -and $o.constrained -ne 'fully_defined') "relations only must stop before the dimensions: $($o | ConvertTo-Json -Compress -Depth 5)"
+    $d = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{}) 'the rest'); Assert ($d.verified -eq $true) 'closing the rest after relations only'
+    Section; $c = Rg (Ok (Invoke-Tool 'sketch_fully_define' @{ relations = 'first'; relate = @(@{ type = 'collinear'; a = @(0.215, -0.01); b = @(0.215, 0.015) }) }) 'relate collinear')
+    Assert ($c.verified -eq $true -and @($c.dimensions).Count -lt @($f.dimensions).Count) "a collinear relation between the tray wall and the cover skirt removes a dimension: $(@($c.dimensions).Count) vs $(@($f.dimensions).Count)"
+    Fail (Invoke-Tool 'sketch_fully_define' @{ relations = 'bogus' }) 'INVALID_PARAMETER' 'a bogus relations mode' | Out-Null
+}
+
 Test 'P03e sketch_convert_entities: the MASTER SURFACE DRIVES the base flange (user rule: master sketches come from the surface construction): master rectangle -> surface extrude -> new sketch -> the master''s four z = 0 edges converted (fully defined, 100 x 60) -> base flange; widening the MASTER to 120 mm moves the flat blank to 120 x 60' {
     Fresh-Part
     $m = Rg (Ok (Invoke-Tool 'sketch_center_rectangle' @{ plane = 'Front Plane'; width = 0.1; height = 0.06 }) 'master sketch'); $msk = $m.sketch

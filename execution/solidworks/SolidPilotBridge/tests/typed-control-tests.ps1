@@ -67,6 +67,13 @@ Test 'T03 feature_data get: every property with its access, per feature type' {
     $ro = Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'get'; feature = 'Edge-Flange1'; include_readonly = $false }) 'get rw only'); Assert (-not ($ro.properties.PSObject.Properties | Where-Object { $_.Value.access -eq 'ro' })) 'include_readonly=false still returned read-only properties'
 }
 
+Test 'T03b feature_data on a flat pattern: only the four safe options are read / written (a full dump crashed SolidWorks on 2026-11-02)' {
+    $f = Rg (Ok (Invoke-Tool 'feature_data' @{ action = 'get'; feature = 'Flat-Pattern1' }) 'get flat pattern')
+    Assert ($f.definition -eq 'IFlatPatternFeatureData') "iface $($f.definition)"; Assert (@($f.properties.PSObject.Properties).Count -eq 4) "expected the 4 safe options, got $(@($f.properties.PSObject.Properties).Count)"
+    Assert ($null -ne $f.properties.CornerTreatment -and $null -ne $f.properties.MergeFace) 'CornerTreatment / MergeFace missing'
+    Fail (Invoke-Tool 'feature_data' @{ action = 'set'; feature = 'Flat-Pattern1'; properties = @{ CornerTrimReliefDistance = 0.001 } }) 'UNSAFE_FEATURE' 'an unsafe flat-pattern property' | Out-Null
+}
+
 Test 'T04 feature_data set: a longer flange makes a taller part, and the write is verified (applied)' {
     $StateVer = StateVer; $r = Ok (Invoke-Tool 'feature_data' @{ action = 'set'; feature = 'Edge-Flange1'; properties = @{ OffsetDistance = 0.035 } }) 'set flange'
     $g = Rg $r; Assert ($g.applied -contains 'OffsetDistance' -and $g.verified -eq $true -and $g.feature_error -eq 0) "report: $($g | ConvertTo-Json -Compress -Depth 4)"; Assert ((StateVer) -eq $StateVer + 1) 'state_version must rise by 1 on a set'

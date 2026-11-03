@@ -974,10 +974,12 @@
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "sketch": "string (optional — the name of the sketch to define; default the ACTIVE sketch. NO_ACTIVE_SKETCH when there is neither)"
+    "sketch": "string (optional — the name of the sketch to define; default the ACTIVE sketch. NO_ACTIVE_SKETCH when there is neither)",
+    "relations": "string (optional, none | first | only; default none. MASTER-SKETCH rule, relations cut dimensions: 'first' adds a construction centre line on the Y axis with a SYMMETRIC relation for every mirrored point pair and a horizontal / vertical relation for every axis-aligned line BEFORE any dimension, then dimensions only what is left; 'only' stops after the relations so the caller adds design-intent dimensions and calls again)",
+    "relate": "array (optional, explicit relations by sketch coordinates in meters: [{type, a:[x,y], b:[x,y], axis:[x,y]}]; type = horizontal | vertical | fixed | coincident | on_line | vertical_points | horizontal_points | midpoint | equal | collinear | parallel | perpendicular | tangent | symmetric. A point = the sketch point nearest the coordinates (20 um), a line = the nearest segment (10 um); a relation that over-defines is undone and listed in relations_skipped)"
    }
   },
-  "output": "→ see execution-response.json — result_geometry {sketch, status_before, constrained_status, constrained, dimensions, relations, redundant_dimensions_removed, problems, verified}"
+  "output": "→ see execution-response.json — result_geometry {sketch, status_before, constrained_status, constrained, dimensions, relations, geometric_relations, relations_skipped, relation_count, redundant_dimensions_removed, problems, verified}"
  },
  "sketch_convert_entities": {
   "description": "CONVERT ENTITIES: the listed edges of the MASTER body (the LOD <= 100 base shape, a solid or a surface) become sketch geometry of the ACTIVE sketch, related to the master edges - the master shape DRIVES the profile (user rule: master sketches and the primary driving dimensions come from the surface construction, they are not retyped). Typical use: master solid / surface -> create_sketch on the plane of the base flange -> this tool with the master's outline edges -> sheet_metal_feature base_flange. The converted geometry is defined by the master, so no free dimensions remain. `points` = a point ON each straight master edge (found on solid AND surface bodies - the master is usually a surface, which analyze_model(edges) does not list); `edges` = indices from analyze_model(edges) (solid bodies only); `chain` also takes tangent-connected edges (default false). Result: {sketch, edges, created_segments, size[w,h], constrained_status (3 = fully defined), verified, problems}. Meters. Bumps state_version.",

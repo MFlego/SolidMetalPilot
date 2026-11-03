@@ -299,6 +299,13 @@ namespace SolidworksExecution.Services
             {
                 if (!(doc is IPartDoc)) throw new ToolFailure("WRONG_DOCUMENT_TYPE", "sketch_fully_define needs an active part.");
                 string name = p.Value<string>("sketch");
+                // RELATIONS FIRST (user rule 2026-11-02, master sketch: "use sketch relationships such as horizontal, vertical in order to cut down on the amount of dimensions"):
+                //   relations = none (default: origin dimensions only, as before) | first (geometric relations, then origin dimensions for what is left) | only (relations only: add the design-intent dimensions yourself, then call again)
+                //   relate    = explicit relations resolved by coordinates (sketch metres) - see ApplyExplicitRelations
+                string relMode = (p.Value<string>("relations") ?? "none").Trim().ToLowerInvariant();
+                if (relMode != "none" && relMode != "first" && relMode != "only") throw new ToolFailure("INVALID_PARAMETER", "relations must be none, first or only.");
+                var relate = p["relate"] as JArray;
+                var relApplied = new JArray(); var relSkipped = new JArray();
                 var sm = doc.SketchManager;
                 var sk = sm.ActiveSketch as ISketch;
                 if (sk != null && !string.IsNullOrEmpty(name) && !string.Equals(((IFeature)sk).Name, name, StringComparison.OrdinalIgnoreCase))
@@ -333,6 +340,10 @@ namespace SolidworksExecution.Services
                     _solidWorks.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
                     sm.AutoInference = false;
 
+                    // 0. relations first: symmetric pairs about a centre line on the Y axis, horizontal / vertical lines, then the caller's explicit relations
+                    if (relMode != "none") AddGeometricRelations(doc, sk, sm, relApplied, relSkipped, problems);
+                    if (relate != null && relate.Count > 0) ApplyExplicitRelations(doc, sk, relate, relApplied, relSkipped);
+
                     // 1. the entities: arc / circle centres first, then every other point (line ends, arc ends, loose points)
                     var centers = new List<ISketchPoint>(); var arcs = new List<ISketchArc>(); var verts = new List<ISketchPoint>(); var seen = new HashSet<string>();
                     Func<ISketchPoint, string> key = pt => Math.Round(pt.X * 1e7).ToString("0") + "," + Math.Round(pt.Y * 1e7).ToString("0");
@@ -355,6 +366,8 @@ namespace SolidworksExecution.Services
                     var all = new List<ISketchPoint>(); all.AddRange(centers); all.AddRange(verts);
                     ExecLog.Write($"sketch_fully_define: {sketchName} status {before}, {centers.Count} centre(s), {arcs.Count} arc/circle(s), {verts.Count} other point(s)");
 
+                    if (relMode != "only")
+                    {
                     // 2. the ordinates of every point off the axes (a redundant one is deleted again)
                     foreach (var pt in all)
                     {
@@ -382,6 +395,7 @@ namespace SolidworksExecution.Services
                         KeepOrDropDimension(doc, doc.AddDimension2((c?.X ?? 0) + arc.GetRadius() + 0.01, (c?.Y ?? 0) + 0.01, 0) as IDisplayDimension, dims, ref removed);
                         doc.ClearSelection2(true);
                     }
+                    }
                 }
                 finally
                 {
@@ -392,12 +406,14 @@ namespace SolidworksExecution.Services
                     sm.AutoInference = inference;
                 }
                 int status = sk.GetConstrainedStatus();
-                if (status != 3) problems.Add("the sketch is " + ConstrainedName(status) + ", not fully defined");
+                if (status != 3 && relMode != "only") problems.Add("the sketch is " + ConstrainedName(status) + ", not fully defined");
                 var res = new JObject
                 {
                     ["sketch"] = sketchName, ["status_before"] = ConstrainedName(before), ["constrained_status"] = status, ["constrained"] = ConstrainedName(status),
                     ["dimensions"] = dims, ["relations"] = relations, ["redundant_dimensions_removed"] = removed
                 };
+                if (relApplied.Count > 0 || relSkipped.Count > 0) { res["geometric_relations"] = relApplied; if (relSkipped.Count > 0) res["relations_skipped"] = relSkipped; }
+                res["relation_count"] = RelationCount(sk);
                 if (problems.Count > 0) res["problems"] = problems;
                 res["verified"] = status == 3;
                 return res;
@@ -444,6 +460,159 @@ namespace SolidworksExecution.Services
             int status = sk.GetConstrainedStatus();
             if (status == 4 || status == 5 || status == 6) { doc.EditUndo2(1); return; }                       // redundant: it would over-define the sketch
             if (RelationCount(sk) > count0) relations.Add(relation + " (" + (pt.X * 1000).ToString("0.###") + ", " + (pt.Y * 1000).ToString("0.###") + " mm) -> origin");
+        }
+
+        // ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        // relations first (master sketch, user rule 2026-11-02): every relation removes a dimension; SolidWorks is the oracle for redundancy (a relation that over-defines is undone and reported)
+        // ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static List<ISketchPoint> AllSketchPoints(ISketch sk)
+        {
+            var list = new List<ISketchPoint>(); var seen = new HashSet<string>();
+            Action<ISketchPoint> add = pt => { if (pt == null) return; string k = Math.Round(pt.X * 1e7).ToString("0") + "," + Math.Round(pt.Y * 1e7).ToString("0"); if (seen.Add(k)) list.Add(pt); };
+            foreach (var so in (sk.GetSketchSegments() as object[]) ?? new object[0])
+            {
+                var ln = so as ISketchLine; var arc = so as ISketchArc;
+                if (ln != null) { add(ln.GetStartPoint2() as ISketchPoint); add(ln.GetEndPoint2() as ISketchPoint); }
+                else if (arc != null) { add(arc.GetCenterPoint2() as ISketchPoint); if (arc.IsCircle() == 0) { add(arc.GetStartPoint2() as ISketchPoint); add(arc.GetEndPoint2() as ISketchPoint); } }
+            }
+            foreach (var po in (sk.GetSketchPoints2() as object[]) ?? new object[0]) add(po as ISketchPoint);
+            return list;
+        }
+
+        private static ISketchPoint NearestSketchPoint(ISketch sk, double x, double y, double tol)
+        {
+            ISketchPoint best = null; double bd = double.MaxValue;
+            foreach (var pt in AllSketchPoints(sk)) { double d = Math.Sqrt((pt.X - x) * (pt.X - x) + (pt.Y - y) * (pt.Y - y)); if (d < bd) { bd = d; best = pt; } }
+            return bd <= tol ? best : null;
+        }
+
+        private static ISketchSegment NearestSketchSegment(ISketch sk, double x, double y, double tol)
+        {
+            ISketchSegment best = null; double bd = double.MaxValue;
+            foreach (var so in (sk.GetSketchSegments() as object[]) ?? new object[0])
+            {
+                double d = double.MaxValue; var ln = so as ISketchLine; var arc = so as ISketchArc;
+                if (ln != null)
+                {
+                    var a = ln.GetStartPoint2() as ISketchPoint; var b = ln.GetEndPoint2() as ISketchPoint; if (a == null || b == null) continue;
+                    double vx = b.X - a.X, vy = b.Y - a.Y, l2 = vx * vx + vy * vy;
+                    double t = l2 < 1e-18 ? 0 : Math.Max(0, Math.Min(1, ((x - a.X) * vx + (y - a.Y) * vy) / l2));
+                    double px = a.X + t * vx - x, py = a.Y + t * vy - y; d = Math.Sqrt(px * px + py * py);
+                }
+                else if (arc != null) { var c = arc.GetCenterPoint2() as ISketchPoint; if (c == null) continue; d = Math.Abs(Math.Sqrt((x - c.X) * (x - c.X) + (y - c.Y) * (y - c.Y)) - arc.GetRadius()); }
+                if (d < bd) { bd = d; best = so as ISketchSegment; }
+            }
+            return bd <= tol ? best : null;
+        }
+
+        // ONE relation on already resolved entities (ISketchPoint / ISketchSegment); a relation that over-defines the sketch is undone, one SolidWorks silently ignores is reported
+        private bool TryRelation(IModelDoc2 doc, ISketch sk, string relation, string what, object[] ents, JArray applied, JArray skipped)
+        {
+            doc.ClearSelection2(true);
+            for (int i = 0; i < ents.Length; i++)
+            {
+                bool sel = ents[i] is ISketchPoint ? ((ISketchPoint)ents[i]).Select4(i > 0, null) : ents[i] is ISketchSegment && ((ISketchSegment)ents[i]).Select4(i > 0, null);
+                if (!sel) { doc.ClearSelection2(true); skipped.Add(what + ": an entity could not be selected"); return false; }
+            }
+            int c0 = RelationCount(sk);
+            doc.SketchAddConstraints(relation);
+            doc.ClearSelection2(true);
+            int st = sk.GetConstrainedStatus();
+            if (st == 4 || st == 5 || st == 6) { doc.EditUndo2(1); skipped.Add(what + ": redundant or conflicting (over-defines the sketch), undone"); return false; }
+            if (RelationCount(sk) <= c0) { skipped.Add(what + ": SolidWorks added no relation"); return false; }
+            applied.Add(what);
+            return true;
+        }
+
+        private static string Pt(ISketchPoint p) { return "(" + (p.X * 1000).ToString("0.###") + ", " + (p.Y * 1000).ToString("0.###") + ")"; }
+
+        // symmetric pairs about a construction centre line on the Y axis (started at the origin, ended ON the top line when there is one: no extra dimension), then horizontal / vertical lines
+        private void AddGeometricRelations(IModelDoc2 doc, ISketch sk, ISketchManager sm, JArray applied, JArray skipped, JArray problems)
+        {
+            var pts = AllSketchPoints(sk);
+            var pairs = new List<ISketchPoint[]>();
+            foreach (var p in pts)
+            {
+                if (p.X <= 1e-9) continue;
+                foreach (var q in pts) if (Math.Abs(q.X + p.X) < 1e-9 && Math.Abs(q.Y - p.Y) < 1e-9) { pairs.Add(new[] { p, q }); break; }
+            }
+            ISketchSegment axis = null;
+            foreach (var so in (sk.GetSketchSegments() as object[]) ?? new object[0])
+            {
+                var ln = so as ISketchLine; var seg = so as ISketchSegment; if (ln == null || seg == null || !seg.ConstructionGeometry) continue;
+                var a = ln.GetStartPoint2() as ISketchPoint; var b = ln.GetEndPoint2() as ISketchPoint;
+                if (a != null && b != null && Math.Abs(a.X) < 1e-9 && Math.Abs(b.X) < 1e-9) { axis = seg; break; }
+            }
+            if (pairs.Count > 0 && axis == null)
+            {
+                // the end of the centre line: the topmost horizontal line that crosses x = 0 (the point is then related to that line instead of being dimensioned)
+                ISketchSegment top = null, topCon = null; double topY = double.MinValue, topConY = double.MinValue;
+                foreach (var so in (sk.GetSketchSegments() as object[]) ?? new object[0])
+                {
+                    var ln = so as ISketchLine; var seg = so as ISketchSegment; if (ln == null || seg == null) continue;
+                    var a = ln.GetStartPoint2() as ISketchPoint; var b = ln.GetEndPoint2() as ISketchPoint; if (a == null || b == null) continue;
+                    if (!(Math.Abs(a.Y - b.Y) < 1e-9 && Math.Min(a.X, b.X) < -1e-9 && Math.Max(a.X, b.X) > 1e-9)) continue;
+                    if (seg.ConstructionGeometry) { if (a.Y > topConY) { topConY = a.Y; topCon = seg; } }
+                    else if (a.Y > topY) { topY = a.Y; top = seg; }
+                }
+                // a real top line is preferred; a sketch whose only horizontals across x = 0 are construction lines (an outline rectangle) ends the centre line on the topmost of those
+                if (top == null && topCon != null) { top = topCon; topY = topConY; }
+                double endY = top != null ? topY : 0.01;
+                axis = sm.CreateCenterLine(0, 0, 0, 0, endY, 0) as ISketchSegment;
+                if (axis == null) problems.Add("the symmetry centre line could not be created");
+                else
+                {
+                    var cl = (ISketchLine)axis; var s0 = cl.GetStartPoint2() as ISketchPoint; var e0 = cl.GetEndPoint2() as ISketchPoint;
+                    TryRelation(doc, sk, "sgVERTICAL2D", "centre line vertical", new object[] { axis }, applied, skipped);
+                    if (s0 != null) TieToOrigin(doc, sk, s0, new[] { "sgCOINCIDENT" }, problems);
+                    if (top != null && e0 != null) TryRelation(doc, sk, "sgCOINCIDENT", "centre line end on the top line", new object[] { e0, top }, applied, skipped);
+                    applied.Add("centre line on the Y axis from the origin (symmetry axis, construction)");
+                }
+            }
+            if (axis != null)
+                foreach (var pr in pairs) TryRelation(doc, sk, "sgSYMMETRIC", "symmetric " + Pt(pr[0]) + " / " + Pt(pr[1]) + " about the Y axis", new object[] { pr[0], pr[1], axis }, applied, skipped);
+            foreach (var so in (sk.GetSketchSegments() as object[]) ?? new object[0])
+            {
+                var ln = so as ISketchLine; var seg = so as ISketchSegment; if (ln == null || seg == null || (axis != null && seg == axis)) continue;
+                var a = ln.GetStartPoint2() as ISketchPoint; var b = ln.GetEndPoint2() as ISketchPoint; if (a == null || b == null) continue;
+                double dx = Math.Abs(a.X - b.X), dy = Math.Abs(a.Y - b.Y);
+                if (dy < 1e-9 && dx > 1e-9) TryRelation(doc, sk, "sgHORIZONTAL2D", "horizontal " + Pt(a) + " - " + Pt(b), new object[] { seg }, applied, skipped);
+                else if (dx < 1e-9 && dy > 1e-9) TryRelation(doc, sk, "sgVERTICAL2D", "vertical " + Pt(a) + " - " + Pt(b), new object[] { seg }, applied, skipped);
+            }
+        }
+
+        // the caller's relations: [{"type": ..., "a": [x, y], "b": [x, y], "axis": [x, y]}] in sketch metres; a point is the sketch point nearest to [x, y] (within 20 um), a line / arc the segment nearest to it (within 10 um)
+        //   horizontal / vertical (a = line) | fixed (a = point or line) | coincident (a, b points) | on_line (a point, b line) | vertical_points / horizontal_points (a, b points) | midpoint (a point, b line)
+        //   equal / collinear / parallel / perpendicular / tangent (a, b segments) | symmetric (a, b points + axis line)
+        private void ApplyExplicitRelations(IModelDoc2 doc, ISketch sk, JArray list, JArray applied, JArray skipped)
+        {
+            foreach (var item in list.OfType<JObject>())
+            {
+                string type = (item.Value<string>("type") ?? "").Trim().ToLowerInvariant();
+                Func<string, ISketchPoint> P = k => { var t = item[k] as JArray; return t != null && t.Count >= 2 ? NearestSketchPoint(sk, t[0].Value<double>(), t[1].Value<double>(), 2e-5) : null; };
+                Func<string, ISketchSegment> S = k => { var t = item[k] as JArray; return t != null && t.Count >= 2 ? NearestSketchSegment(sk, t[0].Value<double>(), t[1].Value<double>(), 1e-5) : null; };
+                string relation = null; object[] ents = null;
+                switch (type)
+                {
+                    case "horizontal": relation = "sgHORIZONTAL2D"; ents = new object[] { S("a") }; break;
+                    case "vertical": relation = "sgVERTICAL2D"; ents = new object[] { S("a") }; break;
+                    case "fixed": { object e = (object)P("a") ?? S("a"); relation = "sgFIXED"; ents = new[] { e }; break; }
+                    case "coincident": relation = "sgCOINCIDENT"; ents = new object[] { P("a"), P("b") }; break;
+                    case "on_line": relation = "sgCOINCIDENT"; ents = new object[] { P("a"), S("b") }; break;
+                    case "vertical_points": relation = "sgVERTICALPOINTS2D"; ents = new object[] { P("a"), P("b") }; break;      // measured 2026-10-29: sgVERTICALPOINTS2D takes, sgVERTPOINTS2D is a silent no-op
+                    case "horizontal_points": relation = "sgHORIZONTALPOINTS2D"; ents = new object[] { P("a"), P("b") }; break;
+                    case "midpoint": relation = "sgATMIDDLE"; ents = new object[] { P("a"), S("b") }; break;
+                    case "equal": relation = "sgSAMELENGTH"; ents = new object[] { S("a"), S("b") }; break;
+                    case "collinear": relation = "sgCOLINEAR"; ents = new object[] { S("a"), S("b") }; break;
+                    case "parallel": relation = "sgPARALLEL"; ents = new object[] { S("a"), S("b") }; break;
+                    case "perpendicular": relation = "sgPERPENDICULAR"; ents = new object[] { S("a"), S("b") }; break;
+                    case "tangent": relation = "sgTANGENT"; ents = new object[] { S("a"), S("b") }; break;
+                    case "symmetric": relation = "sgSYMMETRIC"; ents = new object[] { P("a"), P("b"), S("axis") }; break;
+                }
+                if (relation == null) { skipped.Add("unknown relation type '" + type + "'"); continue; }
+                if (ents.Any(x => x == null)) { skipped.Add(type + " " + item.ToString(Newtonsoft.Json.Formatting.None) + ": an entity was not found at the given coordinates"); continue; }
+                TryRelation(doc, sk, relation, type + " " + item.ToString(Newtonsoft.Json.Formatting.None), ents, applied, skipped);
+            }
         }
 
         // the straight edge nearest to the point over ALL solid and surface (sheet) bodies of the part (analyze_model(edges) and EdgeAtPoint see solid bodies only)
