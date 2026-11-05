@@ -1519,8 +1519,14 @@ def create_pattern(
     plane: str = "",
     geometry_pattern: bool = False,
     bodies: str = "[]",
+    direction2: Literal["", "X", "Y", "Z"] = "",
+    flip2: bool = False,
+    scope_bodies: str = "",
 ) -> str:
     """Create a linear, circular, or mirror feature pattern.
+    scope_bodies = a JSON array of body names (linear / circular pattern of a CUT): the pattern acts on those bodies only
+        (its own scope is "all bodies" by default, so a pattern of a hole cut also cut the other bodies); read back in
+        result_geometry.scope {applied, feature_scope, auto_select}. Name the SAME bodies as the seed cut's scope_bodies.
     bodies = a JSON array of BODY names (e.g. '["Sheet-Metal-Body<1>"]'): patterns whole bodies instead of
         features (linear along direction, circular around axis_name; each copy is a full sheet-metal body with its own
         flat pattern and DXF; its count and spacing are dimensions D1 / D3@LPattern1 that equations can drive; a MIRROR
@@ -1529,8 +1535,8 @@ def create_pattern(
     pattern_type='linear': repeats feature_name along direction ('X', 'Y', or 'Z') with spacing (meters) and count instances.
         flip=True patterns toward the NEGATIVE axis (default False = positive).
         Direction maps to default planes: X→Right Plane normal, Y→Top Plane normal, Z→Front Plane normal.
-        KNOWN LIMIT: count2/spacing2 are accepted but the second direction has no D2 entity wired —
-        two-direction grids do NOT work in one call; compose a grid as a pattern OF a pattern instead.
+        GRID: count2 > 1 with direction2 ('X'/'Y'/'Z', a different axis) and spacing2 (meters) patterns in a
+        second direction in the SAME feature (a hole grid is one seed + one pattern); flip2 reverses it.
     pattern_type='circular': repeats feature_name around axis_name (reference axis, e.g. 'Axis1') with count instances.
         Create the axis first with add_reference_geometry(type='axis', ...).
         equal_spacing=True (default): angle is the TOTAL spread (use 360 for a full ring); count instances are
@@ -1569,6 +1575,9 @@ def create_pattern(
             "plane": plane,
             "geometry_pattern": geometry_pattern,
             "bodies": bodies,
+            "direction2": direction2,
+            "flip2": flip2,
+            "scope_bodies": scope_bodies,
         },
     )
 

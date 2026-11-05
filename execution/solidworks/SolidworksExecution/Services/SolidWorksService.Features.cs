@@ -942,10 +942,18 @@ namespace SolidworksExecution.Services
                         string dirPlane = direction == "Y" ? "Top Plane" : direction == "Z" ? "Front Plane" : "Right Plane";
                         if (!SelectPlaneFlexible(modelDoc, dirPlane, true, 1))
                             return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "DIRECTION_NOT_FOUND", $"Direction plane '{dirPlane}' not found.");
+                        int bcount2 = p?.Value<int?>("count2") ?? 1;
+                        if (bcount2 > 1)
+                        {
+                            string bd2 = (p?.Value<string>("direction2") ?? "").ToUpperInvariant();
+                            string bp2 = bd2 == "Y" ? "Top Plane" : bd2 == "Z" ? "Front Plane" : bd2 == "X" ? "Right Plane" : null;
+                            if (bp2 == null || bd2 == direction || !SelectPlaneFlexible(modelDoc, bp2, true, 2))
+                                return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "DIRECTION_NOT_FOUND", "count2 > 1 needs direction2 ('X', 'Y' or 'Z') different from direction.");
+                        }
                         feature = featureMgr.FeatureLinearPattern3(
                             p?.Value<int?>("count") ?? 2, p?.Value<double?>("spacing") ?? 0.01,
-                            p?.Value<int?>("count2") ?? 1, p?.Value<double?>("spacing2") ?? 0.01,
-                            p?.Value<bool?>("flip") ?? false, false, null, null, false, false) as IFeature;
+                            bcount2, p?.Value<double?>("spacing2") ?? 0.01,
+                            p?.Value<bool?>("flip") ?? false, p?.Value<bool?>("flip2") ?? false, null, null, false, false) as IFeature;
                     }
                     else
                     {
@@ -999,6 +1007,17 @@ namespace SolidworksExecution.Services
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                             "DIRECTION_NOT_FOUND",
                             $"Direction plane '{dirPlane}' not found. Ensure default planes exist in the document.");
+                    // second direction (a grid): its plane normal is selected with mark 2
+                    string dir2 = (p?.Value<string>("direction2") ?? "").ToUpperInvariant();
+                    bool flip2 = p?.Value<bool?>("flip2") ?? false;
+                    if (count2 > 1)
+                    {
+                        string dirPlane2 = dir2 == "Y" ? "Top Plane" : dir2 == "Z" ? "Front Plane" : dir2 == "X" ? "Right Plane" : null;
+                        if (dirPlane2 == null || dir2 == direction)
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "DIRECTION_NOT_FOUND", "count2 > 1 needs direction2 ('X', 'Y' or 'Z') different from direction.");
+                        if (!SelectPlaneFlexible(modelDoc, dirPlane2, true, 2))
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "DIRECTION_NOT_FOUND", $"Direction plane '{dirPlane2}' not found.");
+                    }
 
                     // FeatureLinearPattern3(Num1, Spacing1, Num2, Spacing2, FlipDir1, FlipDir2,
                     // DName1, DName2, GeometryPattern, VaryInstance) — reflection-verified
@@ -1008,7 +1027,7 @@ namespace SolidworksExecution.Services
                     feature = featureMgr.FeatureLinearPattern3(
                         count, spacing,
                         count2, spacing2,
-                        flip, false,
+                        flip, flip2,
                         null, null,
                         false, false) as IFeature; // geometryPattern=false (SW default). NOTE: disjoint instances warn & are skipped — see KNOWN-LIMITATIONS.md; geometryPattern=true returns null here, not a safe blanket default.
                 }
@@ -1150,6 +1169,13 @@ namespace SolidworksExecution.Services
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "PATTERN_FAILED",
                         $"Pattern feature creation returned null. Verify seed feature and direction/axis are valid.");
+                JObject patScope = null;
+                string scopeJson = p?.Value<string>("scope_bodies");
+                if (bodyNames.Count == 0 && !string.IsNullOrEmpty(scopeJson) && scopeJson != "[]" && patternType != "mirror")
+                {
+                    try { patScope = ApplyPatternScope(modelDoc, feature, JArray.Parse(scopeJson), patternType); }
+                    catch (Exception ex) { patScope = new JObject { ["applied"] = false, ["problems"] = new JArray("scope failed: " + ex.Message) }; }
+                }
                 if (bodiesBefore != null)
                 {
                     var after = AllBodies(modelDoc as IPartDoc, false).Select(b => b.Name).ToList();
@@ -1183,6 +1209,7 @@ namespace SolidworksExecution.Services
                     Error = null
                 };
                 if (bodyReport != null && response.ResultGeometry is JObject rgBody) rgBody["body_pattern"] = bodyReport;
+                if (patScope != null && response.ResultGeometry is JObject rgPs) rgPs["scope"] = patScope;
 
                 _guard.RegisterCompleted(request.OperationId, response);
                 return response;
@@ -1197,6 +1224,55 @@ namespace SolidworksExecution.Services
                 return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                     "UNEXPECTED_ERROR", ex.Message);
             }
+        }
+
+        /// <summary>Limit a linear / circular pattern of a CUT to the named bodies (a pattern's own scope is 'all bodies' by default, so a pattern of a hole cut also cut the other bodies). Same recipe as ApplyCutScope: roll back to before the pattern, set the scope through the definition.</summary>
+        private JObject ApplyPatternScope(IModelDoc2 doc, IFeature pat, JArray scope, string patternType)
+        {
+            var rep = new JObject { ["asked"] = scope, ["applied"] = false }; var problems = new JArray(); rep["problems"] = problems;
+            var part = doc as IPartDoc; var fm = doc.FeatureManager; bool rolled = false;
+            try
+            {
+                rolled = fm.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToBeforeFeature, pat.Name);
+                var want = new List<IBody2>(); var names = new List<string>();
+                foreach (var tok in scope)
+                {
+                    string nm = tok.Value<string>();
+                    var body = AllBodies(part, false).FirstOrDefault(b => string.Equals(b.Name, nm, StringComparison.OrdinalIgnoreCase));
+                    if (body == null) problems.Add("no body named '" + nm + "' before the pattern");
+                    else if (!names.Contains(body.Name)) { want.Add(body); names.Add(body.Name); }
+                }
+                rep["bodies"] = new JArray(names.ToArray());
+                if (want.Count == 0) return rep;
+                var wrap = want.Select(b => new DispatchWrapper(b)).ToArray();
+                bool ok;
+                if (patternType == "linear")
+                {
+                    var d = pat.GetDefinition() as ILinearPatternFeatureData; d.AccessSelections(doc, null);
+                    d.SetFeatureScope(true, false, wrap); ok = pat.ModifyDefinition(d, doc, null);
+                }
+                else
+                {
+                    var d = pat.GetDefinition() as ICircularPatternFeatureData; d.AccessSelections(doc, null);
+                    d.SetFeatureScope(true, false, wrap); ok = pat.ModifyDefinition(d, doc, null);
+                }
+                rep["modify_returned"] = ok;
+                fm.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToEnd, ""); rolled = false;
+                doc.EditRebuild3();
+                if (patternType == "linear")
+                {
+                    var r = pat.GetDefinition() as ILinearPatternFeatureData; r.AccessSelections(doc, null);
+                    rep["feature_scope"] = r.FeatureScope; rep["auto_select"] = r.AutoSelect; rep["applied"] = r.FeatureScope && !r.AutoSelect; r.ReleaseSelectionAccess();
+                }
+                else
+                {
+                    var r = pat.GetDefinition() as ICircularPatternFeatureData; r.AccessSelections(doc, null);
+                    rep["feature_scope"] = r.FeatureScope; rep["auto_select"] = r.AutoSelect; rep["applied"] = r.FeatureScope && !r.AutoSelect; r.ReleaseSelectionAccess();
+                }
+            }
+            catch (Exception ex) { problems.Add("pattern scope failed: " + ex.Message); }
+            finally { if (rolled) { try { fm.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToEnd, ""); } catch (Exception) { } } }
+            return rep;
         }
 
         /// <summary>Select the named bodies with a selection mark (256 = bodies to pattern, 1 = bodies to mirror). Returns null when all were selected, else the problem.</summary>

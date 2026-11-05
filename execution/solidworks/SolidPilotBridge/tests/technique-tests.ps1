@@ -77,6 +77,19 @@ Test 'TE4 create_pattern bodies: one L body becomes 3 (linear, 50 mm), each with
     Assert ($m.status -eq 'FAILED' -and $m.error.code -eq 'NOT_SUPPORTED') "mirror of bodies must be refused: $($m.status) $($m.error.code)"
 }
 
+Test 'TE5 create_pattern grid: ONE cut pattern in two directions (3 x 2 holes, count2 / direction2) removes 6 holes of volume, not 3' {
+    Fresh-Part; Ok (Invoke-Tool 'document_units' @{ action = 'set'; length = 'mm'; decimals = 2 }) 'units' | Out-Null
+    $s = LSketch; Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; sketch_name = $s; thickness = 0.002; bend_radius = 0.002; k_factor = 0.45; depth = 0.1 }) 'plate' | Out-Null
+    $v0 = Volume
+    Ok (Invoke-Tool 'create_sketch' @{ plane = 'Top Plane' }) 'hole sketch' | Out-Null
+    Ok (Invoke-Tool 'add_sketch_entities' @{ segments = @(@{ entity_type = 'circle'; cx = 0.01; cy = -0.03; radius = 0.002 }) }) 'hole' | Out-Null
+    $c = Ok (Invoke-Tool 'extrude_feature' @{ feature_type = 'cut'; through = $true }) 'seed hole'
+    $name = $c.cadState.features[0]
+    $v1 = Volume; $one = ($v0 - $v1) * 1e9
+    Ok (Invoke-Tool 'create_pattern' @{ pattern_type = 'linear'; feature_name = $name; direction = 'X'; spacing = 0.008; count = 3; direction2 = 'Z'; spacing2 = 0.02; count2 = 2 }) 'grid pattern' | Out-Null
+    $v2 = Volume; Near (($v0 - $v2) * 1e9) (6 * $one) 1.0 'volume removed (mm3): 6 holes'
+}
+
 Invoke-Tool 'close_document' @{ save = $false; close_all = $true } | Out-Null
 ""; $fail = @($script:results | Where-Object { -not $_.pass }).Count
 "{0} tests, {1} passed, {2} failed." -f $script:results.Count, ($script:results.Count - $fail), $fail
