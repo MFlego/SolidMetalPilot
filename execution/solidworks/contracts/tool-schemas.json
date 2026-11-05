@@ -451,7 +451,8 @@
     "equal_spacing": "boolean (circular only, default true — true: angle=total spread, evenly divided; false: angle=per-instance spacing, may wrap/overlap)",
     "features_json": "string (mirror only — JSON array of feature tree names to mirror, e.g. '[\"Edge-Flange1\",\"Sketched Bend2\"]'; ADR-022 JSON-string idiom)",
     "plane": "string (mirror only — mirror plane name; canonical English default-plane names resolve on any localization; default 'Right Plane')",
-    "geometry_pattern": "boolean (mirror only, default false — true mirrors geometry without solving each feature)"
+    "geometry_pattern": "boolean (mirror only, default false — true mirrors geometry without solving each feature)",
+    "bodies": "string (optional — JSON array of BODY names: patterns whole bodies instead of features (linear / circular; bodies = selection mark 256; each copy is a sheet-metal body with its own flat pattern; D1 = count and D3 = spacing of LPattern are equation-drivable; mirror of bodies is refused: null for sheet-metal bodies); feature_name not needed; read back in result_geometry.body_pattern {bodies_before, bodies_after, new_bodies})"
    }
   },
   "output": "→ see execution-response.json — created pattern feature name in CadState.Features[0]"

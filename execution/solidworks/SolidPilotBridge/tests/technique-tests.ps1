@@ -1,5 +1,5 @@
-# Regression tests for the three tool improvements of 2026-11-05 (tuning round 2): base_flange `depth` (an OPEN profile), extrude_feature `scope_bodies` (a cut that acts on ONE body of a
-# multi-body part) and sketch_convert_entities on ARCS (a curved master edge is found by its own closest point). Each test builds its own part, so any one can run alone.
+# Regression tests for the tool improvements of 2026-11-05 (tuning rounds 2 and 3): base_flange `depth` (an OPEN profile), extrude_feature `scope_bodies` (a cut that acts on ONE body of a
+# multi-body part), sketch_convert_entities on ARCS (a curved master edge is found by its own closest point) and create_pattern `bodies` (a sheet-metal body repeated by a linear / circular pattern). Each test builds its own part, so any one can run alone.
 # Needs SolidWorks running with the bridge, NOTHING else open, the in-process tools loaded.
 # Usage: technique-tests.ps1 [-Force] [-Only 'TE2']
 param([switch]$Force, [string]$Only = '')
@@ -58,6 +58,23 @@ Test 'TE3 sketch_convert_entities on an ARC: a half disc (line + arc) is convert
     Ok (Invoke-Tool 'create_sketch' @{ plane = 'Front Plane' }) 'target sketch' | Out-Null
     $r = Rg (Ok (Invoke-Tool 'sketch_convert_entities' @{ points = '[[0.01,0,0],[0,0.03,0]]' }) 'convert line + arc')
     Assert ($r.edges -eq 2 -and $r.created_segments -eq 2 -and $r.verified -eq $true) "result: $($r | ConvertTo-Json -Compress)"
+}
+
+Test 'TE4 create_pattern bodies: one L body becomes 3 (linear, 50 mm), each with its own flat pattern; the count is an equation-drivable dimension (D1@LPattern1 = 4 gives 4 bodies); a circular copy works; a mirror of bodies is refused' {
+    Fresh-Part; Ok (Invoke-Tool 'document_units' @{ action = 'set'; length = 'mm'; decimals = 2 }) 'units' | Out-Null
+    $s = LSketch; Ok (Invoke-Tool 'sheet_metal_feature' @{ feature_type = 'base_flange'; sketch_name = $s; thickness = 0.002; bend_radius = 0.002; k_factor = 0.45; depth = 0.04 }) 'seed body' | Out-Null
+    $r = Rg (Ok (Invoke-Tool 'create_pattern' @{ pattern_type = 'linear'; direction = 'X'; spacing = 0.06; count = 3; bodies = '["Base-Flange1"]' }) 'linear body pattern')
+    Assert ($r.body_pattern.bodies_before -eq 1 -and $r.body_pattern.bodies_after -eq 3) "bodies: $($r.body_pattern | ConvertTo-Json -Compress)"
+    $f = Rg (Ok (Invoke-Tool 'flat_pattern_control' @{}) 'flats')
+    Assert (@($f.flat_patterns).Count -eq 3) "one flat pattern per body: $(@($f.flat_patterns) -join ',')"
+    Ok (Invoke-Tool 'equations' @{ action = 'set'; variables = '{"N_Rib":"4"}'; links = '{"D1@LPattern1":"N_Rib"}' }) 'count equation' | Out-Null
+    $f = Rg (Ok (Invoke-Tool 'flat_pattern_control' @{}) 'flats after the count change')
+    Assert (@($f.flat_patterns).Count -eq 4) "4 flats after N_Rib = 4: $(@($f.flat_patterns) -join ',')"
+    $ax = Ok (Invoke-Tool 'add_reference_geometry' @{ type = 'axis'; entity1_name = 'Right Plane'; entity1_type = 'PLANE'; entity2_name = 'Front Plane'; entity2_type = 'PLANE' }) 'axis'
+    $c = Rg (Ok (Invoke-Tool 'create_pattern' @{ pattern_type = 'circular'; axis_name = 'Axis1'; count = 3; angle = 360; equal_spacing = $true; bodies = '["Base-Flange1"]' }) 'circular body pattern')
+    Assert ($c.body_pattern.bodies_after -eq 6) "circular: $($c.body_pattern | ConvertTo-Json -Compress)"
+    $m = Invoke-Tool 'create_pattern' @{ pattern_type = 'mirror'; plane = 'Right Plane'; bodies = '["Base-Flange1"]' }
+    Assert ($m.status -eq 'FAILED' -and $m.error.code -eq 'NOT_SUPPORTED') "mirror of bodies must be refused: $($m.status) $($m.error.code)"
 }
 
 Invoke-Tool 'close_document' @{ save = $false; close_all = $true } | Out-Null

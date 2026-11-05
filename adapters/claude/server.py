@@ -1518,8 +1518,14 @@ def create_pattern(
     features_json: str = "[]",
     plane: str = "",
     geometry_pattern: bool = False,
+    bodies: str = "[]",
 ) -> str:
     """Create a linear, circular, or mirror feature pattern.
+    bodies = a JSON array of BODY names (e.g. '["Sheet-Metal-Body<1>"]'): patterns whole bodies instead of
+        features (linear along direction, circular around axis_name; each copy is a full sheet-metal body with its own
+        flat pattern and DXF; its count and spacing are dimensions D1 / D3@LPattern1 that equations can drive; a MIRROR
+        of bodies is refused: it returns null for sheet-metal bodies); feature_name is then not needed. The result reports body_pattern {bodies_before, bodies_after, new_bodies}. Use it for repeated parts
+        of one multi-body part (ribs, bins, legs): one seed + a pattern whose count / spacing are driven by variables.
     pattern_type='linear': repeats feature_name along direction ('X', 'Y', or 'Z') with spacing (meters) and count instances.
         flip=True patterns toward the NEGATIVE axis (default False = positive).
         Direction maps to default planes: X→Right Plane normal, Y→Top Plane normal, Z→Front Plane normal.
@@ -1562,6 +1568,7 @@ def create_pattern(
             "features_json": features_json,
             "plane": plane,
             "geometry_pattern": geometry_pattern,
+            "bodies": bodies,
         },
     )
 

@@ -887,10 +887,22 @@ namespace SolidworksExecution.Services
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "MISSING_PARAMETER",
                         "pattern_type is required: 'linear', 'circular', or 'mirror'.");
-                if (string.IsNullOrEmpty(featureName) && patternType != "mirror")
+                // bodies: pattern / mirror whole BODIES (a JSON array of body names) instead of features
+                var bodyNames = new List<string>();
+                string bodiesJson = p?.Value<string>("bodies");
+                if (!string.IsNullOrEmpty(bodiesJson) && bodiesJson != "[]")
+                {
+                    try { foreach (var t in JArray.Parse(bodiesJson)) bodyNames.Add(t.ToString()); }
+                    catch (Exception ex)
+                    {
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "INVALID_PARAMETER", $"bodies must be a JSON array of body names: {ex.Message}");
+                    }
+                }
+                if (string.IsNullOrEmpty(featureName) && patternType != "mirror" && bodyNames.Count == 0)
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "MISSING_PARAMETER",
-                        "feature_name is required (name of the feature to pattern, e.g. 'Boss-Extrude1').");
+                        "feature_name is required (name of the feature to pattern, e.g. 'Boss-Extrude1'), or bodies (a JSON array of body names).");
 
                 var modelDoc = _solidWorks.IActiveDoc2 as IModelDoc2;
                 if (modelDoc == null)
@@ -902,8 +914,60 @@ namespace SolidworksExecution.Services
 
                 var featureMgr = modelDoc.FeatureManager;
                 IFeature feature = null;
+                JObject bodyReport = null;
+                var bodiesBefore = bodyNames.Count > 0 ? AllBodies(modelDoc as IPartDoc, false).Select(b => b.Name).ToList() : null;
+                IFeature bodyFlatPat = null; bool bodyRolled = false;
+                if (bodyNames.Count > 0)
+                {
+                    // a sheet-metal part keeps Flat-Pattern last with the rollback bar after it: insert before it (as the mirror does)
+                    bodyFlatPat = FindFlatPattern(modelDoc);
+                    if (bodyFlatPat != null)
+                    {
+                        try { bodyRolled = modelDoc.FeatureManager.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToBeforeFeature, bodyFlatPat.Name); }
+                        catch { bodyRolled = false; }
+                    }
+                }
+                try
+                {
 
-                if (patternType == "linear")
+                if (bodyNames.Count > 0 && patternType != "mirror")
+                {
+                    // bodies to pattern = selection mark 256, direction / axis = mark 1
+                    string miss = SelectBodiesWithMark(modelDoc, bodyNames, 256, false);
+                    if (miss != null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "BODY_NOT_FOUND", miss);
+                    if (patternType == "linear")
+                    {
+                        string direction = (p?.Value<string>("direction") ?? "X").ToUpperInvariant();
+                        string dirPlane = direction == "Y" ? "Top Plane" : direction == "Z" ? "Front Plane" : "Right Plane";
+                        if (!SelectPlaneFlexible(modelDoc, dirPlane, true, 1))
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "DIRECTION_NOT_FOUND", $"Direction plane '{dirPlane}' not found.");
+                        feature = featureMgr.FeatureLinearPattern3(
+                            p?.Value<int?>("count") ?? 2, p?.Value<double?>("spacing") ?? 0.01,
+                            p?.Value<int?>("count2") ?? 1, p?.Value<double?>("spacing2") ?? 0.01,
+                            p?.Value<bool?>("flip") ?? false, false, null, null, false, false) as IFeature;
+                    }
+                    else
+                    {
+                        string axisName = p?.Value<string>("axis_name");
+                        if (string.IsNullOrEmpty(axisName))
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "MISSING_PARAMETER", "circular pattern requires axis_name.");
+                        bool axisSel = modelDoc.Extension.SelectByID2(axisName, "AXIS", 0, 0, 0, true, 1, null, 0)
+                                    || modelDoc.Extension.SelectByID2(axisName, "REFERENCECURVES", 0, 0, 0, true, 1, null, 0);
+                        if (!axisSel)
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "AXIS_NOT_FOUND", $"Axis '{axisName}' not found.");
+                        feature = featureMgr.FeatureCircularPattern4(
+                            p?.Value<int?>("count") ?? 4, (p?.Value<double?>("angle") ?? 90.0) * Math.PI / 180.0,
+                            false, null, false, p?.Value<bool?>("equal_spacing") ?? true, false) as IFeature;
+                    }
+                }
+                else if (bodyNames.Count > 0)
+                {
+                    // measured 2026-11-05: InsertMirrorFeature2(BMirrorBody) and the mirror-solid definition both return null for sheet-metal bodies
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "NOT_SUPPORTED",
+                        "mirror of BODIES returns null in SolidWorks for sheet-metal bodies (both API routes tried). Use a linear or circular pattern of the bodies, or mirror FEATURES (features_json).");
+                }
+                else if (patternType == "linear")
                 {
                     string direction = (p?.Value<string>("direction") ?? "X").ToUpperInvariant();
                     double spacing = p?.Value<double?>("spacing") ?? 0.01;
@@ -1072,10 +1136,32 @@ namespace SolidworksExecution.Services
                         false, equalSpacing, false) as IFeature; // geometryPattern=false (SW default); see KNOWN-LIMITATIONS.md re: disjoint instances
                 }
 
+                }
+                finally
+                {
+                    if (bodyRolled)
+                    {
+                        try { modelDoc.FeatureManager.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToEnd, ""); }
+                        catch { }
+                    }
+                }
+
                 if (feature == null)
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "PATTERN_FAILED",
                         $"Pattern feature creation returned null. Verify seed feature and direction/axis are valid.");
+                if (bodiesBefore != null)
+                {
+                    var after = AllBodies(modelDoc as IPartDoc, false).Select(b => b.Name).ToList();
+                    bodyReport = new JObject
+                    {
+                        ["asked"] = new JArray(bodyNames.ToArray()),
+                        ["bodies_before"] = bodiesBefore.Count,
+                        ["bodies_after"] = after.Count,
+                        ["new_bodies"] = new JArray(after.Where(n => !bodiesBefore.Contains(n)).ToArray()),
+                        ["rolled_before_flat_pattern"] = bodyFlatPat != null,
+                    };
+                }
 
                 var response = new ExecutionResponse
                 {
@@ -1096,6 +1182,7 @@ namespace SolidworksExecution.Services
                     ResultGeometry = BuildBodySummary(modelDoc),
                     Error = null
                 };
+                if (bodyReport != null && response.ResultGeometry is JObject rgBody) rgBody["body_pattern"] = bodyReport;
 
                 _guard.RegisterCompleted(request.OperationId, response);
                 return response;
@@ -1110,6 +1197,27 @@ namespace SolidworksExecution.Services
                 return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                     "UNEXPECTED_ERROR", ex.Message);
             }
+        }
+
+        /// <summary>Select the named bodies with a selection mark (256 = bodies to pattern, 1 = bodies to mirror). Returns null when all were selected, else the problem.</summary>
+        private string SelectBodiesWithMark(IModelDoc2 doc, List<string> names, int mark, bool append)
+        {
+            var part = doc as IPartDoc;
+            var all = AllBodies(part, false);
+            doc.ClearSelection2(true);
+            var sd = ((ISelectionMgr)doc.SelectionManager).CreateSelectData();
+            sd.Mark = mark;
+            bool app = append;
+            foreach (var nm in names)
+            {
+                IBody2 body = all.FirstOrDefault(b => string.Equals(b.Name, nm, StringComparison.OrdinalIgnoreCase));
+                if (body == null)
+                    return "no body named '" + nm + "' (bodies: " + string.Join(", ", all.Select(b => b.Name)) + ")";
+                if (!body.Select2(app, sd))
+                    return "body '" + nm + "' could not be selected";
+                app = true;
+            }
+            return null;
         }
 
         // -----------------------------------------------------------------------
