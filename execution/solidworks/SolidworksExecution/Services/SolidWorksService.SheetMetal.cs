@@ -97,6 +97,12 @@ namespace SolidworksExecution.Services
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                             "SHEET_METAL_FAILED", "CreateDefinition(swFmBaseFlange) returned null.");
 
+                    // DEPTH of an OPEN profile (an L, U, hat or arc section): the sheet is the profile thickened and extruded by this distance (blind, direction 1). A closed profile is a plate and ignores it
+                    // (the comment above: an open profile with no distance makes SolidWorks return null).
+                    double bfDepth = p?.Value<double?>("depth") ?? 0.0;
+                    if (bfDepth < 0) return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "INVALID_PARAMETER", "depth must be > 0 METERS (the extrusion distance of an open profile).");
+                    if (bfDepth > 0) { bfData.D1EndConditionType = (int)swEndConditions_e.swEndCondBlind; bfData.D1EndConditionDistance = bfDepth; }
+
                     // A SHEET-METAL GAUGE TABLE (probe 85; the API route was "unresolved" until the ORDER was found): UseGaugeTable = true FIRST, then the FULL path of the .xlsx, then the gauge spelled exactly as the
                     // table spells it (names carry trailing blanks: "16 Gauge "). The thickness, the bend radius (the table's first available radius unless gauge_radius says another) and the K-factor then come from
                     // the table row, and the cut list's "Sheet Metal Gauge" reads e.g. "16GA.". thickness / bend_radius / k_factor of this call are ignored in that mode.
@@ -159,6 +165,14 @@ namespace SolidworksExecution.Services
                         catch (Exception kex) { ExecLog.Write($"base_flange: global K-factor {kFactor} failed: {kex.Message}"); }
                     }
                     baseFlangeDone:;
+                    if (feature != null && bfDepth > 0)
+                    {
+                        // read the depth back from the feature itself: ModifyDefinition-style calls answer True when SolidWorks ignored a value
+                        double depthRead = double.NaN;
+                        try { var rd = feature.GetDefinition() as IBaseFlangeFeatureData; if (rd != null) depthRead = rd.D1EndConditionDistance; } catch (Exception) { }
+                        if (gaugeInfo == null) gaugeInfo = new JObject { ["feature"] = feature.Name };
+                        gaugeInfo["depth"] = depthRead; gaugeInfo["depth_asked"] = bfDepth; gaugeInfo["verified"] = !double.IsNaN(depthRead) && Math.Abs(depthRead - bfDepth) < 1e-7;
+                    }
                 }
                 else if (featureType == "edge_flange")
                 {

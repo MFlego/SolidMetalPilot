@@ -339,6 +339,8 @@ def lower_sheet_metal(node):
         # thickness-direction flags also define the intrinsic sheet orientation that downstream
         # bend directions are measured against (the 4-1 Bend1 mirror-fold lesson).
         params["symmetric_thickness"] = True
+    if node.get("depth") is not None:
+        params["depth"] = float(node["depth"])           # an OPEN profile (angle, channel, tube) is extruded by this distance (2026-11-05)
     note = ("base flange, gauge '%s' of %s" % (node["gauge"], node["gauge_table"]) if node.get("gauge_table") is not None
             else "base flange t=%g" % float(node["thickness"]))
     return [Op("sheet_metal_feature", params, note)]

@@ -467,6 +467,7 @@
    "k_factor": "number (optional, 0..1 — neutral-axis factor, default 0.5)",
    "reverse_thickness": "boolean (optional, default false — thicken to the OPPOSITE side of the sketch plane. A wrong side puts every downstream bend-sketch plane off the sheet. PREFER reproducing the original's own flag (analyze_model(features) reports it on the SMBaseFlange) over deriving from face positions — see symmetric_thickness for why)",
    "symmetric_thickness": "boolean (optional, default false — thicken BOTH ways off the sketch plane, ±t/2 mid-plane style. Reproduce the ORIGINAL's own flag (analyze_model(features) reports it on the SMBaseFlange): the thickness-direction flags also define the intrinsic sheet orientation that downstream bend directions fold against — an identical blank B-rep built via reverse flags folded 4-1's Bend1 the MIRRORED way)",
+   "depth": "number, meters (optional: an OPEN profile - angle, channel, hat, arc / tube section - is thickened and extruded by this distance; read back by the tool; a closed profile is a plate and ignores it)",
    "gauge_table": "string (optional) - the FULL path of a SolidWorks sheet-metal gauge table (.xlsx); with `gauge`",
    "gauge": "string - the gauge exactly as the table spells it (e.g. '16 Gauge'); required with gauge_table (a wrong one lists the table's)",
    "gauge_radius": "number (optional) - meters: one of the table row's radii (default the first)"

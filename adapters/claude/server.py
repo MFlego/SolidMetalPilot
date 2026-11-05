@@ -482,6 +482,7 @@ def extrude_feature(
     up_to_face_index: int = -1,
     mid_plane: bool = False,
     merge: bool = True,
+    scope_bodies: str = "",
 ) -> str:
     """Extrude/feature the active sketch profile.
     feature_type='boss' (default): solid extrusion, requires depth.
@@ -501,6 +502,11 @@ def extrude_feature(
         sketch plane to a face explicitly and read one coordinate back afterwards.
     merge (boss, default True): False keeps a boss that touches or overlaps an existing body as a body of its
         OWN (multi-body parts: the tab body and the slot body of sheet_metal_tab_slot, a lid, an accessory).
+    scope_bodies (cut): JSON array of the bodies the cut may act on - body names ("Sheet<2>" style, as the
+        bodies list reports) or [x, y, z] points (METERS) on a face of the body: '["Boss-Extrude2"]' or
+        '[[0.1,0,0.02]]'. WITHOUT IT an API cut removes material from EVERY body it touches (a halving slot in
+        one rib cut all its neighbours). The scope is set on the cut feature itself and read back in
+        result_geometry.scope {applied, bodies, feature_scope, auto_select, scope_count, problems}.
     Sheet metal: a 'cut' on a sheet-metal body (holes after a bend included) is handled
         automatically — Normal Cut, inserted before the Flat-Pattern; no special params.
     On COMPLETED the result carries result_geometry {volume, faces, edges} after the feature — verify
@@ -521,6 +527,7 @@ def extrude_feature(
             "up_to_face_index": up_to_face_index,
             "mid_plane": mid_plane,
             "merge": merge,
+            **({"scope_bodies": json.loads(scope_bodies) if isinstance(scope_bodies, str) else scope_bodies} if scope_bodies else {}),
         },
     )
 
@@ -1615,6 +1622,8 @@ def sheet_metal_feature(
     angle_exact: bool = False,
     gap: Optional[float] = None,
     profile_limits: str = "",
+    depth: Annotated[float, Field(
+        ge=0, description="base_flange of an OPEN profile (L, U, hat, arc): the extrusion distance in METERS; 0 = none (a closed profile is a plate)")] = 0.0,
 ) -> str:
     """Create sheet metal features on the active part. Lengths METERS, angles DEGREES.
 
@@ -1622,7 +1631,8 @@ def sheet_metal_feature(
         active: a rebuild, e.g. an equation change, closes the active sketch; NO_PROFILE_SKETCH says so); exits sketch
         mode. k_factor is applied through the sheet-metal override (creates D2@Sheet-Metal1) when it differs from the
         template's.
-        thickness · bend_radius (default = thickness) · k_factor (0.5).
+        thickness · bend_radius (default = thickness) · k_factor (0.5) · depth (METERS; an OPEN profile - angle,
+        channel, hat, tube section - is thickened and extruded by it, read back as depth / verified).
         SHEET-METAL GAUGE TABLE: gauge_table = the FULL path of a SolidWorks gauge table (.xlsx, e.g.
         '<install>\\lang\\english\\Sheet Metal Gauge Tables\\sample table - steel - english units.xlsx') + gauge =
         a gauge of it ('16 Gauge'; a wrong one lists the table's gauges, GAUGE_NOT_FOUND). The thickness, bend radius
@@ -1693,6 +1703,8 @@ def sheet_metal_feature(
         "symmetric_thickness": symmetric_thickness,
         "clear_profile": clear_profile,
     }
+    if depth > 0:
+        params["depth"] = depth
     if fixed_face_index >= 0:
         params["fixed_face_index"] = fixed_face_index
     if edge_index >= 0:
@@ -2087,7 +2099,10 @@ def sheet_metal_convert(
     bend_edges = '[[x,y,z], ...]': one point ON each bend edge, in pick order (shorthand: bends, then rip_sketches).
     rip_sketches = '["Sketch30", ...]': names of existing sketches, one line each, ending at the body's vertices.
     steps = '[{"list":"bend","edges":[[x,y,z],...]},{"list":"rip","sketches":["Sketch30",...]},{"list":"bend",...}]':
-        the full ordered recipe (use it when bends and rips interleave); overrides bend_edges / rip_sketches.
+        the full ordered recipe (use it when bends and rips interleave); overrides bend_edges / rip_sketches. A rip step
+        may also give `"edges":[[x,y,z],...]` (a point ON each body edge to rip): they go into the PropertyManager's own
+        'Rip Edges' list and need no sketch - the form to use when the rip is a body edge, because a rip sketch line
+        lying exactly on a body edge cannot be clicked apart from it (NOT_PICKABLE).
     Settings go into the PropertyManager's own controls and are write-verified against the created feature.
         thickness and bend_radius are REQUIRED (SolidWorks remembers the PropertyManager's last values, so a call must
         not lean on them). Whatever else you leave out takes the PropertyManager's FACTORY default and is written
@@ -2283,8 +2298,9 @@ def sketch_convert_entities(edges: str = "", points: str = "", chain: bool = Fal
     surface body (fully defined, origin-centred) -> create_sketch on the plane the base flange belongs on ->
     sketch_convert_entities(edges=...) -> sheet_metal_feature(base_flange). A later change of the master's
     dimensions then moves the profile.
-    points = '[[x,y,z],...]', a point ON each straight master edge (meters) - found on solid AND surface bodies, so it
-    is the form for a surface master (analyze_model(edges) lists solid bodies only); edges = a JSON array of edge
+    points = '[[x,y,z],...]', a point ON each master edge (meters; straight or CURVED: an arc, circle or spline is found by its
+    own closest point - use `pm` of solidpilot-com/scripts/bodyedges.cs, never the chord midpoint) - found on solid AND
+    surface bodies, so it is the form for a surface master (analyze_model(edges) lists solid bodies only); edges = a JSON array of edge
     indices from analyze_model(edges), e.g. '[8,9,10,11]' (solid bodies); chain=True also converts tangent-connected
     edges (default False: exactly the edges you list). Needs an ACTIVE sketch (NO_ACTIVE_SKETCH). Returns {sketch, edges,
     created_segments, size:[w,h], constrained_status, constrained, problems, verified}: the converted geometry is

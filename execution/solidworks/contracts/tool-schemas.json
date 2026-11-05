@@ -126,7 +126,8 @@
     "through": "boolean (boss/cut \u2014 through-all end condition; depth ignored)",
     "up_to_face_index": "integer (optional, default -1 = off; boss/cut \u2014 >= 0 selects the UP-TO-SURFACE end condition terminating exactly on that model face; index from analyze_model(faces), same enumeration as create_sketch face_index; depth ignored. The face is append-selected with Mark=1, the FeatureExtrusion3/FeatureCut4 end-condition reference mark)",
     "mid_plane": "boolean (optional, default false; boss/cut \u2014 swEndCondMidPlane: extrudes SYMMETRICALLY about the sketch plane, depth = TOTAL width; conflicts with through/up_to_face_index)",
-    "merge": "boolean (boss, default true; false keeps a boss that touches or overlaps an existing body as a body of its own - multi-body parts)"
+    "merge": "boolean (boss, default true; false keeps a boss that touches or overlaps an existing body as a body of its own - multi-body parts)",
+    "scope_bodies": "JSON array (cut only): the bodies the cut may act on - body names or [x,y,z] points (meters) on a face of the body; without it an API cut removes material from every body it touches. Read back in result_geometry.scope"
    }
   },
   "output": "\u2192 see execution-response.json"
@@ -495,6 +496,7 @@
     "fixed_y": "number (sketched_bend \u2014 Y of a 3D point ON the fixed face, meters)",
     "fixed_z": "number (sketched_bend \u2014 Z of a 3D point ON the fixed face, meters)",
     "reverse_thickness": "boolean (base_flange only, default false \u2014 thicken to the OPPOSITE side of the sketch plane; derive from which side the original blank's faces sit, e.g. feature_map's SMBaseFlange created faces)",
+    "depth": "number, meters (base_flange of an OPEN profile - angle, channel, hat, arc/tube section: the extrusion distance; read back as depth / verified; a closed profile is a plate and ignores it)",
     "symmetric_thickness": "boolean (base_flange only, default false \u2014 thicken BOTH ways off the sketch plane (\u00b1t/2, mid-plane style); reproduce the original's own flag \u2014 it also sets the intrinsic sheet orientation downstream bend directions fold against)",
     "clear_profile": "boolean (edge_flange_sketch only, default true \u2014 wipe the generated default rectangle so the caller redraws the ORIGINAL's custom profile via add_sketch_entity; the op leaves the generated sketch ACTIVE and echoes its MEASURED frame in result_geometry, then edge_flange_finish creates the flange from it \u2014 SW's documented custom-profile flow; the flange API accepts only a sketch IT generated)",
     "edge_index": "integer (edge_flange/edge_flange_sketch/edge_flange_finish, optional \u2014 the attach edge's stable index from analyze_model(edges); PREFERRED over ex/ey/ez, whose coordinate pick can miss a real edge (KNOWN-LIMITATIONS #6). Since v0.7.0 the simple edge_flange accepts it too (shared SelectFlangeEdge). For the two-call custom-profile flow pass the SAME index to both calls \u2014 the sketch step adds no solid geometry, so edge enumeration is stable)",

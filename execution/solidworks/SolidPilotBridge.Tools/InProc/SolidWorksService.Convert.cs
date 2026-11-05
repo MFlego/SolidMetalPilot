@@ -128,8 +128,19 @@ namespace SolidworksExecution.Services
                 }
                 else if (kind == "rip")
                 {
-                    var names = AsArray(so["sketches"], "steps[].sketches"); if (names == null || names.Count == 0) throw new ToolFailure("INVALID_PARAMETER", "a rip step needs sketches: [\"Sketch30\", ...].");
-                    foreach (var nt in names)
+                    var names = AsArray(so["sketches"], "steps[].sketches"); var ripEdgePts = AsArray(so["edges"], "steps[].edges");
+                    if ((names == null || names.Count == 0) && (ripEdgePts == null || ripEdgePts.Count == 0)) throw new ToolFailure("INVALID_PARAMETER", "a rip step needs sketches: [\"Sketch30\", ...] and / or edges: [[x, y, z], ...] (points ON the body edges to rip).");
+                    // rip EDGES go into the PropertyManager's own 'Rip Edges' list (no sketch needed; a sketch line that lies exactly on a body edge cannot be clicked apart from it: NOT_PICKABLE, measured 2026-11-05)
+                    if (ripEdgePts != null)
+                        foreach (var et in ripEdgePts)
+                        {
+                            nr++; var pt = ToPoint(et is JObject ? et["point"] ?? et["mid"] : et, "rip edge " + nr); string why;
+                            var e = EdgeNearest(plan.Body, pt, 5e-4, out why); if (e == null) throw new ToolFailure("EDGE_NOT_FOUND", "rip edge " + nr + ": " + why + ".");
+                            var tgt = new PickTarget { Label = "rip edge " + nr, List = "RipEdges", IsEdge = true, Mid = EdgeAt(e, 0.5), Samples = PickFractions.Select(f => EdgeAt(e, f)).ToArray(), A = EdgeAt(e, 0), B = EdgeAt(e, 1) };
+                            FaceGeometryAround(e, tgt);
+                            plan.Targets.Add(tgt);
+                        }
+                    foreach (var nt in names ?? new JArray())
                     {
                         nr++; string nm = (string)nt; var feat = FindFeatureByName(doc, nm, null); var sk = feat == null ? null : feat.GetSpecificFeature2() as ISketch;
                         if (sk == null) throw new ToolFailure("SKETCH_NOT_FOUND", "rip sketch '" + nm + "' does not exist (or is not a sketch).");
@@ -510,8 +521,9 @@ namespace SolidworksExecution.Services
                     }
 
                     int bends = PmUi.ItemCount(vis, "BendList"), rips = PmUi.ItemCount(vis, "RipSketches"), ripEdges = Math.Max(0, PmUi.ItemCount(vis, "RipEdges"));
-                    int wantBends = plan.Targets.Count(x => x.List == "BendList"), wantRips = plan.Targets.Count(x => x.List == "RipSketches");
+                    int wantBends = plan.Targets.Count(x => x.List == "BendList"), wantRips = plan.Targets.Count(x => x.List == "RipSketches"), wantRipEdges = plan.Targets.Count(x => x.List == "RipEdges");
                     if (bends != wantBends || rips != wantRips) throw new ToolFailure("LIST_MISMATCH", "The PropertyManager holds " + bends + " bend edges and " + rips + " rip sketches; expected " + wantBends + " and " + wantRips + ".");
+                    if (ripEdges < wantRipEdges) throw new ToolFailure("LIST_MISMATCH", "The PropertyManager's Rip Edges list holds " + ripEdges + " edges; at least " + wantRipEdges + " expected.");
                     var summary = new JObject { ["bend_edges"] = bends, ["rip_sketches"] = rips, ["rip_edges_found"] = ripEdges, ["fixed_face"] = plan.FixedLabel };
                     if (!plan.CornerEarly) ApplyConvertSettings(vis, plan, problems, true);      // corner type, rip gap, overlap ratio: after the picks
                     PmUi.Pump(300); ExecLog.Write("convert: all picks done, settings applied");

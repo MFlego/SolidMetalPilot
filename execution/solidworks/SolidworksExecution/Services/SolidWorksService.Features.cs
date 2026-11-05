@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Newtonsoft.Json.Linq;
 using SolidWorks.Interop.sldworks;
@@ -72,6 +73,9 @@ namespace SolidworksExecution.Services
                 // side from a cut sketched on a boundary plane). through = through-all (depth ignored).
                 bool reverse = p?.Value<bool?>("reverse") ?? false;
                 bool mergeResult = p?.Value<bool?>("merge") ?? true;      // false: a boss that touches or overlaps existing bodies stays a body of its own (multi-body parts: tab and slot, lids, accessories)
+                // scope_bodies (cut): the bodies the cut may act on - body names or [x,y,z] points (METERS) on a face of the body. Without it an API cut removes material from EVERY body it touches (measured 2026-11-05).
+                JArray cutScope = p?["scope_bodies"] as JArray; if (cutScope == null && p?["scope_bodies"]?.Type == JTokenType.String) { try { cutScope = JArray.Parse(p.Value<string>("scope_bodies")); } catch (Exception) { } }
+                JObject cutScopeReport = null;
                 int endCond = upToSurface
                     ? (int)swEndConditions_e.swEndCondUpToSurface
                     : midPlane
@@ -278,6 +282,8 @@ namespace SolidworksExecution.Services
                         ExecLog.Write($"cut: flipped-direction retry (sheetMetal={isSheetMetal}) → feature={(feature != null)}");
                     }
 
+                    if (feature != null && cutScope != null && cutScope.Count > 0) cutScopeReport = ApplyCutScope(modelDoc, feature, cutScope);
+
                     // Restore the rollback bar to the end so Flat-Pattern (and its sub-features) re-apply.
                     if (rolledBack)
                     {
@@ -332,6 +338,7 @@ namespace SolidworksExecution.Services
                     ResultGeometry = BuildBodySummary(modelDoc),
                     Error = null
                 };
+                if (cutScopeReport != null && response.ResultGeometry is JObject rgScope) rgScope["scope"] = cutScopeReport;
 
                 _guard.RegisterCompleted(request.OperationId, response);
                 return response;
@@ -1416,6 +1423,61 @@ namespace SolidworksExecution.Services
                 return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                     "UNEXPECTED_ERROR", ex.Message);
             }
+        }
+
+        /// <summary>Restrict a Cut-Extrude to the chosen bodies after it was made. MEASURED 2026-11-05 (probe cutscope.cs): the scope names the bodies as they are BEFORE the cut, so the rollback bar goes to just
+        /// before the cut, the bodies are resolved there, IExtrudeFeatureData2 gets AutoSelect = false, FeatureScope = true and FeatureScopeBodies = a DispatchWrapper[] of them (a plain object[] or the
+        /// post-cut bodies end up as "both bodies"), the definition is modified and the bar goes back to just after the cut. Read back: {applied, bodies, feature_scope, auto_select, scope_count, problems}.
+        /// A body is named by Body2.Name (as it is before the cut: "Base-Flange2", not "Cut-Extrude1[2]") or given as a point on one of its faces.</summary>
+        private JObject ApplyCutScope(IModelDoc2 doc, IFeature cut, JArray scope)
+        {
+            var rep = new JObject { ["asked"] = scope }; var problems = new JArray(); rep["problems"] = problems; rep["applied"] = false;
+            var part = doc as IPartDoc; var fm = doc.FeatureManager; bool rolled = false;
+            try
+            {
+                rolled = fm.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToBeforeFeature, cut.Name);
+                if (!rolled) { problems.Add("could not roll back to before " + cut.Name); return rep; }
+                var want = new List<IBody2>(); var names = new List<string>();
+                foreach (var tok in scope)
+                {
+                    IBody2 body = null;
+                    if (tok.Type == JTokenType.String)
+                    {
+                        string nm = tok.Value<string>();
+                        foreach (var b in AllBodies(part, false)) if (string.Equals(b.Name, nm, StringComparison.OrdinalIgnoreCase)) { body = b; break; }
+                        if (body == null) problems.Add("no body named '" + nm + "' before the cut (bodies: " + string.Join(", ", AllBodies(part, false).Select(b => b.Name)) + ")");
+                    }
+                    else if (tok is JArray a && a.Count >= 3)
+                    {
+                        double d; var f = FaceNearest(part, new[] { a[0].Value<double>(), a[1].Value<double>(), a[2].Value<double>() }, out d);
+                        body = (f != null && d <= 1e-4) ? f.GetBody() as IBody2 : null;
+                        if (body == null) problems.Add("no face within 0.1 mm of the point " + tok.ToString(Newtonsoft.Json.Formatting.None) + " before the cut");
+                    }
+                    else problems.Add("scope_bodies entries are body names or [x, y, z] points (meters)");
+                    if (body != null && !names.Contains(body.Name)) { want.Add(body); names.Add(body.Name); }
+                }
+                rep["bodies"] = new JArray(names.ToArray());
+                if (want.Count == 0) return rep;
+                var cd = cut.GetDefinition() as IExtrudeFeatureData2;
+                if (cd == null) { problems.Add("the feature has no IExtrudeFeatureData2 definition"); return rep; }
+                cd.AccessSelections(doc, null);
+                cd.AutoSelect = false; cd.FeatureScope = true;
+                cd.FeatureScopeBodies = want.Select(b => new DispatchWrapper(b)).ToArray();
+                rep["modify_returned"] = cut.ModifyDefinition(cd, doc, null);
+                fm.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToAfterFeature, cut.Name); rolled = false;
+                doc.EditRebuild3();
+                var rd = cut.GetDefinition() as IExtrudeFeatureData2;
+                if (rd != null)
+                {
+                    rd.AccessSelections(doc, null);
+                    int n = rd.GetFeatureScopeBodiesCount(); rep["feature_scope"] = rd.FeatureScope; rep["auto_select"] = rd.AutoSelect; rep["scope_count"] = n;
+                    rep["applied"] = rd.FeatureScope && !rd.AutoSelect && n == want.Count;
+                    rd.ReleaseSelectionAccess();
+                }
+            }
+            catch (Exception ex) { problems.Add("scope failed: " + ex.Message); }
+            finally { if (rolled) { try { fm.EditRollback((int)swMoveRollbackBarTo_e.swMoveRollbackBarToAfterFeature, cut.Name); } catch (Exception) { } } }
+            return rep;
         }
 
         private IFeature FeatureCutOnce(IFeatureManager featureMgr, bool dir, int endCond, double depthVal, bool normalCut)

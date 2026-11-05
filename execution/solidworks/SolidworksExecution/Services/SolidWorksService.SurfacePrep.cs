@@ -26,11 +26,21 @@ namespace SolidworksExecution.Services
             return l;
         }
 
-        // the face (of any body) nearest to a point, and how far it is
+        // the face nearest to a point, and how far it is. VISIBLE bodies are searched first: a hidden body (the user's original surface, kept hidden beside the working one and often coincident with it) is never what
+        // a pick means (measured 2026-11-05: a point on the working floor also lay on the hidden original floor, distance 0 for both); hidden bodies are searched only when no visible face is within 0.1 mm
         private static IFace2 FaceNearest(IPartDoc part, double[] pt, out double dist)
         {
+            IFace2 best = FaceNearestIn(AllBodies(part, true), pt, out dist);
+            if (best != null && dist <= 1e-4) return best;
+            double d2; var any = FaceNearestIn(AllBodies(part, false), pt, out d2);
+            if (any != null && d2 < dist) { dist = d2; best = any; }
+            return best;
+        }
+
+        private static IFace2 FaceNearestIn(List<IBody2> bodies, double[] pt, out double dist)
+        {
             IFace2 best = null; dist = double.MaxValue;
-            foreach (var b in AllBodies(part, false))
+            foreach (var b in bodies)
             {
                 var fs = b.GetFaces() as object[]; if (fs == null) continue;
                 foreach (var o in fs)

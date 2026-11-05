@@ -615,7 +615,7 @@ namespace SolidworksExecution.Services
             }
         }
 
-        // the straight edge nearest to the point over ALL solid and surface (sheet) bodies of the part (analyze_model(edges) and EdgeAtPoint see solid bodies only)
+        // the edge (line, arc, circle or spline) nearest to the point over ALL solid and surface (sheet) bodies of the part (analyze_model(edges) and EdgeAtPoint see solid bodies only)
         private IEdge EdgeAtPointAnyBody(IModelDoc2 doc, double[] pt)
         {
             IEdge best = null; double bd = double.MaxValue;
@@ -628,11 +628,21 @@ namespace SolidworksExecution.Services
                         var e = eo as IEdge; if (e == null) continue;
                         try
                         {
-                            var c = e.GetCurve() as ICurve; if (c == null || !c.IsLine()) continue;
-                            var a = ((IVertex)e.GetStartVertex()).GetPoint() as double[]; var b = ((IVertex)e.GetEndVertex()).GetPoint() as double[]; if (a == null || b == null) continue;
-                            double dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], l2 = dx * dx + dy * dy + dz * dz; if (l2 < 1e-18) continue;
-                            double t = Math.Max(0, Math.Min(1, ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy + (pt[2] - a[2]) * dz) / l2));
-                            double px = a[0] + t * dx - pt[0], py = a[1] + t * dy - pt[1], pz = a[2] + t * dz - pt[2], d = Math.Sqrt(px * px + py * py + pz * pz);
+                            var c = e.GetCurve() as ICurve; if (c == null) continue;
+                            double d;
+                            if (c.IsLine())
+                            {
+                                var a = ((IVertex)e.GetStartVertex()).GetPoint() as double[]; var b = ((IVertex)e.GetEndVertex()).GetPoint() as double[]; if (a == null || b == null) continue;
+                                double dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], l2 = dx * dx + dy * dy + dz * dz; if (l2 < 1e-18) continue;
+                                double t = Math.Max(0, Math.Min(1, ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy + (pt[2] - a[2]) * dz) / l2));
+                                double px = a[0] + t * dx - pt[0], py = a[1] + t * dy - pt[1], pz = a[2] + t * dz - pt[2]; d = Math.Sqrt(px * px + py * py + pz * pz);
+                            }
+                            else
+                            {
+                                // an arc, circle or spline: the edge's own closest point (the chord says nothing about where an arc lies; measured 2026-11-05: the old 'straight edges only' rule made every arc EDGE_NOT_FOUND)
+                                var cp = e.GetClosestPointOn(pt[0], pt[1], pt[2]) as double[]; if (cp == null || cp.Length < 3) continue;
+                                double px = cp[0] - pt[0], py = cp[1] - pt[1], pz = cp[2] - pt[2]; d = Math.Sqrt(px * px + py * py + pz * pz);
+                            }
                             if (d < bd) { bd = d; best = e; }
                         }
                         catch (System.Runtime.InteropServices.COMException) { }
@@ -667,10 +677,10 @@ namespace SolidworksExecution.Services
                     foreach (var t in ptList)
                     {
                         var pt = ToPoint(t, "each point"); var e = EdgeAtPointAnyBody(doc, pt);
-                        if (e == null) throw new ToolFailure("EDGE_NOT_FOUND", "No straight edge (solid or surface body) within 0.1 mm of (" + string.Join(", ", pt.Select(v => v.ToString("G6")).ToArray()) + ") m.");
+                        if (e == null) throw new ToolFailure("EDGE_NOT_FOUND", "No edge (solid or surface body) within 0.1 mm of (" + string.Join(", ", pt.Select(v => v.ToString("G6")).ToArray()) + ") m.");
                         edges.Add(e);
                     }
-                if (edges.Count == 0) throw new ToolFailure("MISSING_PARAMETER", "edges (indices from analyze_model(edges), solid bodies) and / or points ([[x,y,z], ...], a point ON each straight edge, solid or surface) are required: the master edges to convert.");
+                if (edges.Count == 0) throw new ToolFailure("MISSING_PARAMETER", "edges (indices from analyze_model(edges), solid bodies) and / or points ([[x,y,z], ...], a point ON each edge - straight or curved - solid or surface) are required: the master edges to convert.");
                 bool chain = p.Value<bool?>("chain") ?? false;                       // chain = true also takes every tangent-connected edge; the caller lists the edges it wants
                 int before = ((sk.GetSketchSegments() as object[]) ?? new object[0]).Length;
                 var problems = new JArray();

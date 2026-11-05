@@ -40,6 +40,8 @@ namespace SolidworksExecution.Services
         [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr h);
         [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr h, ref POINT p);
+        [DllImport("user32.dll")] private static extern bool ClientToScreen(IntPtr h, ref POINT p);
+        [DllImport("user32.dll")] private static extern bool GetClientRect(IntPtr h, out RECT r);
         [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
 
         public static string ClassOf(IntPtr h) { var sb = new StringBuilder(120); GetClassName(h, sb, 120); return sb.ToString(); }
@@ -300,12 +302,31 @@ namespace SolidworksExecution.Services
         // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         // picking in the graphics area
         // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        /// <summary>Model point (m) to screen pixel in the active view. Calibrated 2026-10-26: IModelView.Transform.ArrayData is a 3x3 COLUMN-major rotation (0..8), a translation
-        /// (9..11) and a scale in pixels per meter (12); m9 is an absolute screen x, y is measured from the top of the visible box.</summary>
+        /// <summary>Screen position of the top-left corner of the graphics window's client area. The view transform's translation (m9, m10) is measured from THAT corner, not from the screen:
+        /// it only looked absolute while the window started at x = 0. A toolbar docked at the left edge (measured 2026-11-05: an Annotation toolbar, 45 px) moves the whole window right and
+        /// every click missed by the same 45 px. The window is the nearest window of this process, from the one under the middle of the visible box upward, whose client area holds the whole
+        /// box (an overlay or a child control under the middle is skipped). Null when none is found (the box is covered by another application): Project then falls back to the old rule.</summary>
+        public static int[] GraphicsOrigin(IModelView view)
+        {
+            var box = (int[])view.GetVisibleBox();
+            var h = WindowFromPoint(new POINT { X = (box[0] + box[2]) / 2, Y = (box[1] + box[3]) / 2 });
+            for (int i = 0; i < 8 && h != IntPtr.Zero; i++, h = GetParent(h))
+            {
+                if (!IsOurs(h)) return null;
+                RECT c; var o = new POINT { X = 0, Y = 0 }; if (!GetClientRect(h, out c) || !ClientToScreen(h, ref o)) continue;
+                if (box[0] >= o.X - 3 && box[1] >= o.Y - 3 && box[2] <= o.X + c.R + 3 && box[3] <= o.Y + c.B + 3) return new[] { o.X, o.Y };
+            }
+            return null;
+        }
+
+        /// <summary>Model point (m) to screen pixel in the active view. IModelView.Transform.ArrayData is a 3x3 COLUMN-major rotation (0..8), a translation (9..11) and a scale in pixels per
+        /// meter (12); (m9, m10) are pixels from the top-left corner of the graphics window (<see cref="GraphicsOrigin"/>). Calibrated 2026-10-26 as "x absolute, y from the top of the visible
+        /// box", which held only while the window sat at x = 0; that rule remains the fallback.</summary>
         public static int[] Project(IModelView view, double[] p)
         {
             var m = (double[])((IMathTransform)view.Transform).ArrayData; var box = (int[])view.GetVisibleBox(); double s = m[12];
-            return new[] { (int)Math.Round(m[9] + s * (m[0] * p[0] + m[3] * p[1] + m[6] * p[2])), (int)Math.Round(box[1] + m[10] + s * (m[1] * p[0] + m[4] * p[1] + m[7] * p[2])) };
+            var o = GraphicsOrigin(view); double ox = o == null ? 0 : o[0], oy = o == null ? box[1] : o[1];
+            return new[] { (int)Math.Round(ox + m[9] + s * (m[0] * p[0] + m[3] * p[1] + m[6] * p[2])), (int)Math.Round(oy + m[10] + s * (m[1] * p[0] + m[4] * p[1] + m[7] * p[2])) };
         }
 
         public static int[] VisibleBox(IModelView view) { return (int[])view.GetVisibleBox(); }

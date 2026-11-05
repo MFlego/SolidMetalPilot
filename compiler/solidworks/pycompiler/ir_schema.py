@@ -411,6 +411,8 @@ def validate(graph):
                 errors.append("%s: 'reverse_thickness' must be a boolean." % label)
             if node.get("symmetric_thickness") is not None and not isinstance(node.get("symmetric_thickness"), bool):
                 errors.append("%s: 'symmetric_thickness' must be a boolean." % label)
+            if node.get("depth") is not None and not _is_pos_number(node.get("depth")):
+                errors.append("%s: 'depth' must be a positive number (meters) when present: the extrusion distance of an OPEN profile." % label)
 
         elif ntype == "sketched_bend":
             # Bend line(s) come from the ACTIVE sketch — must immediately follow its sketch.

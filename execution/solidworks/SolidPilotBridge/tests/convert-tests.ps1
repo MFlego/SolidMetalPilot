@@ -208,6 +208,16 @@ Test 'C12 keep_body: the original surface body stays next to the new sheet-metal
     $b = @(Bodies); Assert ($b.Count -eq 2 -and @($b | Where-Object { $_ -match 'type=1' }).Count -eq 1) "a surface body and the sheet-metal solid expected: $($b -join ' | ')"
 }
 
+Test 'C18 picks follow the graphics window: with the document window moved 300 px to the right (a docked toolbar did the same by 45 px and every pick missed) the tray converts and every pick is made' {
+    Tray
+    try {
+        [void](Invoke-Probe 'probe_arrangewin.cs' 'shift'); Start-Sleep -Milliseconds 800
+        $vb = (Rg (Ok (Invoke-Tool 'ui_inspect' @{ action = 'project'; points = '[[0,0,0]]' }) 'project')).visible_box; Assert ($vb[0] -gt 300) "the window did not move: visible box $($vb -join ',')"
+        $r = Rg (Ok (Invoke-Tool 'sheet_metal_convert' @{ fixed_face = '[0,0,0]'; bend_edges = $TrayEdges; thickness = 0.001524; bend_radius = 0.004572; reverse_thickness = 'on' }) 'convert in a moved window')
+        Assert ($r.verified -eq $true -and $r.accepted -eq $true -and -not $r.problems -and $r.lists.bend_edges -eq 4) "result: $($r | ConvertTo-Json -Compress -Depth 4)"
+    } finally { [void](Invoke-Probe 'probe_arrangewin.cs' 'max') }
+}
+
 Test 'C13 defaults never leak: after a call with unusual settings, a call that gives only thickness and radius gets the FACTORY defaults (reverse on, keep body off, butt corner, 2 mm gap, rectangular relief 0.5)' {
     Tray
     $a = Rg (Ok (Invoke-Tool 'sheet_metal_convert' @{ fixed_face = '[0,0,0]'; bend_edges = $TrayEdges; thickness = 0.002; bend_radius = 0.003; reverse_thickness = 'off'; keep_body = $true; corner = 'overlap'; rip_gap = 0.0001; overlap_ratio = 1; relief = 'tear'; relief_ratio = 0.8 }) 'convert with unusual settings')
