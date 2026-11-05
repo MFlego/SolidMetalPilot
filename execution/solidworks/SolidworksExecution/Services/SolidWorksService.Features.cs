@@ -1316,7 +1316,12 @@ namespace SolidworksExecution.Services
                 if (patternType == "linear")
                 {
                     var d = pat.GetDefinition() as ILinearPatternFeatureData; d.AccessSelections(doc, null);
-                    d.SetFeatureScope(true, false, wrap); ok = pat.ModifyDefinition(d, doc, null);
+                    // ModifyDefinition drops the SECOND direction of a grid (measured: a scoped 19 x 5 slot grid came back as 19 x 1): read both directions first and put them back
+                    object a1 = d.D1Axis, a2 = d.D2Axis; int n1 = d.D1TotalInstances, n2 = d.D2TotalInstances; double sp1 = d.D1Spacing, sp2 = d.D2Spacing; bool rv1 = d.D1ReverseDirection, rv2 = d.D2ReverseDirection;
+                    d.SetFeatureScope(true, false, wrap);
+                    d.D1Axis = a1; d.D1TotalInstances = n1; d.D1Spacing = sp1; d.D1ReverseDirection = rv1;
+                    if (n2 > 1) { d.D2Axis = a2; d.D2TotalInstances = n2; d.D2Spacing = sp2; d.D2ReverseDirection = rv2; }
+                    ok = pat.ModifyDefinition(d, doc, null);
                 }
                 else
                 {
