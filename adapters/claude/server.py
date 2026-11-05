@@ -1583,6 +1583,35 @@ def create_pattern(
 
 
 # ---------------------------------------------------------------------------
+# Tool: sketch_pattern
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def sketch_pattern(
+    kind: Literal["circular", "linear"] = "circular",
+    count: Annotated[int, Field(ge=2, description="Instances incl. the seed (circular: around the ring; linear: in X)")] = 2,
+    radius: Annotated[float, Field(ge=0, description="circular: ring radius in METERS; the ring CENTRE lies this far to the +X side of the seed (put the seed at (-radius, 0) for a ring about the origin)")] = 0.0,
+    angle: Annotated[float, Field(description="circular: total angle in DEGREES (360 = a full ring, spaced 360 / count); linear: the X direction angle")] = 360.0,
+    spacing_angle: Annotated[float, Field(description="circular: angle BETWEEN instances in degrees (default: 360 / count for a full ring)")] = 0.0,
+    rotate: bool = False,
+    spacing: Annotated[float, Field(description="linear: X spacing in METERS")] = 0.01,
+    count2: Annotated[int, Field(ge=1, description="linear: instances in the second direction")] = 1,
+    spacing2: Annotated[float, Field(description="linear: Y spacing in METERS")] = 0.01,
+    angle2: Annotated[float, Field(description="linear: the second direction's angle in degrees")] = 90.0,
+) -> str:
+    """SKETCH PATTERN: a circular or linear STEP AND REPEAT of every entity of the ACTIVE sketch (a ring or a grid of
+    holes made in ONE editable sketch, then ONE cut: this reaches every body the cut meets, which a feature pattern of a
+    cut does not). Put the seed (a dimensioned circle) in the sketch first (create_sketch, add_sketch_entity,
+    sketch_fully_define), keep the sketch ACTIVE, then call this. circular: count instances in a ring whose CENTRE lies `radius` METERS to the +X side of the seed (measured: it is not the sketch origin and selecting the origin does not change that; put the seed at (-radius, 0) for a ring about the origin, so the angular phase is a multiple of 360 / count), `angle` total degrees (360 = full ring). linear:
+    count x count2 instances, `spacing` / `spacing2` METERS, directions `angle` / `angle2` degrees. The count is a
+    sketch dimension. Returns {created, segments_before, segments_after}; verified when segments were added."""
+    params: dict = {"kind": kind, "count": count, "radius": radius, "angle": angle, "rotate": rotate,
+                    "spacing": spacing, "count2": count2, "spacing2": spacing2, "angle2": angle2}
+    if spacing_angle:
+        params["spacing_angle"] = spacing_angle
+    return _call("sketch_pattern", params)
+
+
+# ---------------------------------------------------------------------------
 # Tool: set_part_material
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)

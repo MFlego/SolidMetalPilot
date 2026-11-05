@@ -460,6 +460,26 @@
   },
   "output": "→ see execution-response.json — created pattern feature name in CadState.Features[0]"
  },
+ "sketch_pattern": {
+  "description": "SKETCH PATTERN: a circular or linear step-and-repeat of every entity of the ACTIVE sketch (a ring or grid of holes in one sketch; the cut then meets every body). The seed must be in the active sketch.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "kind": "string ('circular' default, or 'linear')",
+    "count": "integer (instances incl. the seed)",
+    "radius": "number (circular: distance from the sketch origin to the seed, meters)",
+    "angle": "number (circular: total degrees, 360 = a full ring; linear: X direction angle)",
+    "spacing_angle": "number (circular: degrees between instances; default 360 / count for a full ring)",
+    "rotate": "boolean (circular: rotate the copies with the ring)",
+    "spacing": "number (linear: X spacing meters)",
+    "count2": "integer (linear: second-direction instances)",
+    "spacing2": "number (linear: Y spacing meters)",
+    "angle2": "number (linear: second direction angle degrees)"
+   }
+  },
+  "output": "-> see execution-response.json - result_geometry {kind, created, segments_before, segments_after, sketch}"
+ },
  "set_part_material": {
   "description": "Assigns a material to the active part document (all configurations). Applied material appears in Mass Properties and the feature tree. Requires a part document — not a drawing.",
   "input": {

@@ -108,7 +108,7 @@ namespace SolidworksExecution.Services
                 if (be != null && be.Count > 0) steps.Add(new JObject { ["list"] = "bend", ["edges"] = be });
                 if (rs != null && rs.Count > 0) steps.Add(new JObject { ["list"] = "rip", ["sketches"] = rs });
             }
-            if (steps.Count == 0) throw new ToolFailure("MISSING_PARAMETER", "bend_edges (a list of points, one ON each bend edge, in pick order) or steps is required.");
+            if (steps.Count == 0 && p["steps"] == null) throw new ToolFailure("MISSING_PARAMETER", "bend_edges (a list of points, one ON each bend edge, in pick order) or steps is required (steps = [] converts the FIXED FACE ONLY: a curved face is its own bend, e.g. a cylinder band).");
             int nb = 0, nr = 0;
             foreach (var st in steps)
             {
@@ -151,7 +151,7 @@ namespace SolidworksExecution.Services
                 }
                 else throw new ToolFailure("INVALID_PARAMETER", "a step's list must be \"bend\" or \"rip\".");
             }
-            if (nb == 0) throw new ToolFailure("MISSING_PARAMETER", "at least one bend edge is required.");
+            if (nb == 0 && p["steps"] == null) throw new ToolFailure("MISSING_PARAMETER", "at least one bend edge is required (or steps = [] for the fixed face only).");
 
             // the map of everything else on screen: every edge of the body, sampled about every 4 mm (3 .. 80 samples), as model-space points
             foreach (var o in (plan.Body.GetEdges() as object[]) ?? new object[0])

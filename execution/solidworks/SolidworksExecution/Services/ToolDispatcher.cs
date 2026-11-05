@@ -39,6 +39,7 @@ namespace SolidworksExecution.Services
                 case "edit_sketch":            return service.EditSketch(request);
                 case "add_reference_geometry": return service.AddReferenceGeometry(request);
                 case "create_pattern":         return service.CreatePattern(request);
+                case "sketch_pattern":         return service.SketchPattern(request);
                 case "set_part_material":      return service.SetPartMaterial(request);
                 case "sheet_metal_feature":    return service.SheetMetalFeature(request);
                 case "modify_dimension":       return service.ModifyDimension(request);

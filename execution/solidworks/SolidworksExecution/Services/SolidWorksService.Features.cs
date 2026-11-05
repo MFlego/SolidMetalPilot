@@ -1029,7 +1029,7 @@ namespace SolidworksExecution.Services
                         count2, spacing2,
                         flip, flip2,
                         null, null,
-                        false, false) as IFeature; // geometryPattern=false (SW default). NOTE: disjoint instances warn & are skipped — see KNOWN-LIMITATIONS.md; geometryPattern=true returns null here, not a safe blanket default.
+                        p?.Value<bool?>("geometry_pattern") ?? false, false) as IFeature; // geometryPattern=false (SW default) unless asked. NOTE: disjoint instances warn & are skipped — see KNOWN-LIMITATIONS.md; geometryPattern=true returns null here, not a safe blanket default.
                 }
                 else if (patternType == "mirror")
                 {
@@ -1152,7 +1152,7 @@ namespace SolidworksExecution.Services
                         count, angleRad,
                         false,
                         null,
-                        false, equalSpacing, false) as IFeature; // geometryPattern=false (SW default); see KNOWN-LIMITATIONS.md re: disjoint instances
+                        p?.Value<bool?>("geometry_pattern") ?? false, equalSpacing, false) as IFeature; // geometryPattern=false (SW default) unless asked: with it off an instance that misses the seed body is skipped (measured: a 48-hole ring over 12 treads gave 4 holes)
                 }
 
                 }
@@ -1224,6 +1224,73 @@ namespace SolidworksExecution.Services
                 return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                     "UNEXPECTED_ERROR", ex.Message);
             }
+        }
+
+        // -----------------------------------------------------------------------
+        // sketch_pattern: a linear / circular STEP AND REPEAT of the entities of the ACTIVE sketch (a ring or grid of holes in ONE sketch)
+        // -----------------------------------------------------------------------
+        public ExecutionResponse SketchPattern(ToolRequest request)
+        {
+            if (_guard.IsDuplicate(request.OperationId))
+                return _guard.GetDuplicate(request.OperationId);
+            if (!_guard.IsStateVersionValid(request.StateVersion))
+                return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "INVALID_STATE_VERSION", "Incoming state_version does not match current state.");
+            if (!EnsureConnected())
+                return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "COM_ATTACH_FAILED", "SolidWorks process not found or COM not registered.");
+            try
+            {
+                var p = request.Params as JObject;
+                string kind = (p?.Value<string>("kind") ?? "circular").ToLowerInvariant();
+                var modelDoc = _solidWorks.IActiveDoc2 as IModelDoc2;
+                if (modelDoc == null)
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "NO_ACTIVE_DOCUMENT", "No active document found in SolidWorks.");
+                var sm = modelDoc.SketchManager;
+                var sketch = sm.ActiveSketch;
+                if (sketch == null)
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "NO_ACTIVE_SKETCH", "sketch_pattern needs the sketch with the seed entities to be ACTIVE (create_sketch / edit_sketch).");
+                var segs = sketch.GetSketchSegments() as object[];
+                int before = segs == null ? 0 : segs.Length;
+                if (before == 0)
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "EMPTY_SKETCH", "The active sketch has no entities to pattern.");
+                modelDoc.ClearSelection2(true);
+                foreach (var o in segs) ((ISketchSegment)o).Select4(true, null);
+                bool ok; string sketchName = (sketch as IFeature)?.Name;
+                if (kind == "circular")
+                {
+                    double radius = p?.Value<double?>("radius") ?? 0.0;                      // meters: distance from the pattern centre to the seed
+                    double totalDeg = p?.Value<double?>("angle") ?? 360.0;
+                    int count = p?.Value<int?>("count") ?? 2;
+                    double stepDeg = p?.Value<double?>("spacing_angle") ?? (totalDeg >= 360.0 - 1e-9 ? totalDeg / count : totalDeg / Math.Max(1, count - 1));
+                    bool rotate = p?.Value<bool?>("rotate") ?? false;
+                    // the ring's centre lands `radius` to the side (+ sketch X) of the seed, NOT on the sketch origin (measured: selecting the origin does not change it; Rotate Entities with copies leaves the copies on top of the seed): put the seed at (-radius, 0) for a ring about the origin
+                    ok = sm.CreateCircularSketchStepAndRepeat(radius, totalDeg * Math.PI / 180.0, count, stepDeg * Math.PI / 180.0, rotate, "", true, true, true);
+                }
+                else if (kind == "linear")
+                {
+                    int nx = p?.Value<int?>("count") ?? 2, ny = p?.Value<int?>("count2") ?? 1;
+                    double sx = p?.Value<double?>("spacing") ?? 0.01, sy = p?.Value<double?>("spacing2") ?? 0.01;
+                    double ax = p?.Value<double?>("angle") ?? 0.0, ay = p?.Value<double?>("angle2") ?? 90.0;
+                    ok = sm.CreateLinearSketchStepAndRepeat(nx, ny, sx, sy, ax * Math.PI / 180.0, ay * Math.PI / 180.0, "", false, false, false, true, ny > 1);
+                }
+                else
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "INVALID_PARAMETER", "kind must be 'circular' or 'linear'.");
+                var after = (modelDoc.SketchManager.ActiveSketch?.GetSketchSegments() as object[])?.Length ?? 0;
+                modelDoc.ClearSelection2(true);
+                var response = new ExecutionResponse
+                {
+                    OperationId = request.OperationId,
+                    Status = ok ? "COMPLETED" : "FAILED",
+                    Verified = ok && after > before,
+                    StateVersion = _guard.GetCurrentStateVersion() + 1,
+                    CadState = new CadState { StateVersion = _guard.GetCurrentStateVersion() + 1, ActiveDocument = modelDoc.GetTitle(), DocumentType = "PART", ActiveSketch = sketchName, Features = new List<string>(), Dimensions = new List<string>() },
+                    ResultGeometry = new JObject { ["kind"] = kind, ["created"] = ok, ["segments_before"] = before, ["segments_after"] = after, ["sketch"] = sketchName },
+                    Error = ok ? null : new ExecutionError { Code = "SKETCH_PATTERN_FAILED", Message = "SolidWorks refused the step-and-repeat (seed entities / radius / count)." }
+                };
+                _guard.RegisterCompleted(request.OperationId, response);
+                return response;
+            }
+            catch (COMException ex) { return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "COM_ERROR", ex.Message); }
+            catch (Exception ex) { return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "UNEXPECTED_ERROR", ex.Message); }
         }
 
         /// <summary>Limit a linear / circular pattern of a CUT to the named bodies (a pattern's own scope is 'all bodies' by default, so a pattern of a hole cut also cut the other bodies). Same recipe as ApplyCutScope: roll back to before the pattern, set the scope through the definition.</summary>
