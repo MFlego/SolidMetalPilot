@@ -145,6 +145,7 @@ namespace SolidworksExecution.Services
                         nr++; string nm = (string)nt; var feat = FindFeatureByName(doc, nm, null); var sk = feat == null ? null : feat.GetSpecificFeature2() as ISketch;
                         if (sk == null) throw new ToolFailure("SKETCH_NOT_FOUND", "rip sketch '" + nm + "' does not exist (or is not a sketch).");
                         var line = LongestSketchLine(sk); if (line == null) throw new ToolFailure("SKETCH_EMPTY", "rip sketch '" + nm + "' has no line to pick.");
+                        var contour = RipSketchContourProblem(sk, nm); if (contour != null) throw new ToolFailure("RIP_SKETCH_NOT_ONE_CONTOUR", contour + ".");
                         var a = line.Item1; var b = line.Item2;
                         plan.Targets.Add(new PickTarget { Label = "rip " + nm, List = "RipSketches", Sketch = nm, Mid = new[] { (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2 }, Samples = PickFractions.Select(f => new[] { a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f }).ToArray() });
                     }
@@ -276,6 +277,33 @@ namespace SolidworksExecution.Services
             return n.Value;
         }
 
+        // a rip sketch must be ONE open contour: with two separate lines SolidWorks raises "The sketch has more than one open contour." in the middle of the pick and the call deadlocks behind that dialog
+        // (measured 2026-11-12, round 7: only killing SolidWorks freed it)
+        private static string RipSketchContourProblem(ISketch sk, string name)
+        {
+            var pts = new List<double[]>(); var ends = new List<int[]>();
+            foreach (var o in (sk.GetSketchSegments() as object[]) ?? new object[0])
+            {
+                var seg = o as ISketchSegment; if (seg == null || seg.ConstructionGeometry) continue;
+                var ln = o as ISketchLine; if (ln == null) continue;
+                var a = ln.GetStartPoint2() as ISketchPoint; var b = ln.GetEndPoint2() as ISketchPoint; if (a == null || b == null) continue;
+                int[] ix = new int[2]; var ends2 = new[] { new[] { a.X, a.Y, a.Z }, new[] { b.X, b.Y, b.Z } };
+                for (int k = 0; k < 2; k++)
+                {
+                    int found = pts.FindIndex(q => Math.Abs(q[0] - ends2[k][0]) < 1e-7 && Math.Abs(q[1] - ends2[k][1]) < 1e-7 && Math.Abs(q[2] - ends2[k][2]) < 1e-7);
+                    if (found < 0) { pts.Add(ends2[k]); found = pts.Count - 1; }
+                    ix[k] = found;
+                }
+                ends.Add(ix);
+            }
+            if (ends.Count <= 1) return null;
+            var parent = Enumerable.Range(0, pts.Count).ToArray();
+            Func<int, int> find = null; find = i => parent[i] == i ? i : (parent[i] = find(parent[i]));
+            foreach (var e in ends) parent[find(e[0])] = find(e[1]);
+            int comps = ends.Select(e => find(e[0])).Distinct().Count();
+            return comps > 1 ? "rip sketch '" + name + "' holds " + comps + " separate lines: Convert takes ONE open contour per sketch (one sketch per rip), otherwise SolidWorks raises 'more than one open contour' and the call deadlocks" : null;
+        }
+
         // the longest real line of a sketch, in MODEL coordinates (a rip sketch is one line; the longest is the one to click)
         private Tuple<double[], double[]> LongestSketchLine(ISketch sk)
         {
@@ -342,7 +370,17 @@ namespace SolidworksExecution.Services
 
         private string ShowView(IModelDoc2 doc, string name)
         {
-            if (name != "current") { doc.ShowNamedView2(name, -1); PmUi.Pump(200); doc.ViewZoomtofit2(); }
+            if (name.StartsWith("rot:", StringComparison.OrdinalIgnoreCase))
+            {
+                // "rot:dx,dy": the isometric view turned about the screen centre by dx (about the vertical screen axis) and dy (about the horizontal one), radians: edges that crowd each other in every standard
+                // view (the far-side ledge bends of a stepped surface on a small window, round 7) stand apart from the other side of the part
+                var parts = name.Substring(4).Split(','); double dx = 0, dy = 0;
+                if (parts.Length > 0) double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out dx);
+                if (parts.Length > 1) double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out dy);
+                doc.ShowNamedView2("*Isometric", -1); PmUi.Pump(200); doc.ViewZoomtofit2(); PmUi.Pump(200);
+                var mv0 = doc.ActiveView as IModelView; if (mv0 != null) { mv0.RotateAboutCenter(dx, dy); PmUi.Pump(200); doc.ViewZoomtofit2(); }
+            }
+            else if (name != "current") { doc.ShowNamedView2(name, -1); PmUi.Pump(200); doc.ViewZoomtofit2(); }
             PmUi.Pump(500); return name;
         }
 
@@ -475,12 +513,13 @@ namespace SolidworksExecution.Services
                             if (!caches.TryGetValue(ck, out vc)) { vc = BuildViewCache(doc, plan, view); caches[ck] = vc; }
                             // candidate pixels along the target on screen; a pixel is good when the nearest OTHER edge is far away (hard against another edge, a click could select that one instead)
                             bool zoomedHere = false;
-                            for (int attempt = 0; attempt < 2 && !done; attempt++)
+                            for (int attempt = 0; attempt < 4 && !done; attempt++)
                             {
-                            if (attempt == 1)
+                            if (attempt >= 1)
                             {
-                                // nothing reached 4 px at fit zoom (the two creases of a 2 mm jog are 3 px apart on a 500 mm part): zoom ONTO the target and look again
-                                ZoomToModelPoint(doc, t.Samples[0], 0.012); PmUi.Pump(300); SettleView(doc, graphics, centre);
+                                // nothing reached 4 px at fit zoom (the two creases of a 2 mm jog are 3 px apart on a 500 mm part): zoom ONTO the target and look again; attempts 2 and 3 zoom onto the 2nd and 3rd sample
+                                // of a long edge (the first one may sit beside a corner: round 7, a smaller window made the far ledge edges of Box_variant_1 NOT_PICKABLE)
+                                ZoomToModelPoint(doc, t.Samples[Math.Min(attempt - 1, t.Samples.Length - 1)], 0.012); PmUi.Pump(300); SettleView(doc, graphics, centre);
                                 mv = (IModelView)doc.ActiveView; zoomedHere = true;
                                 ck = view + "#zoom#" + string.Join(",", ((double[])((IMathTransform)mv.Transform).ArrayData).Take(13).Select(v => v.ToString("G6", CultureInfo.InvariantCulture)).ToArray());
                                 if (!caches.TryGetValue(ck, out vc)) { vc = BuildViewCache(doc, plan, view); caches[ck] = vc; }

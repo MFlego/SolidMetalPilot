@@ -336,6 +336,22 @@ namespace SolidworksExecution.Services
                         // Commit the geometry so analyze_model/verify_state read the rebuilt body.
                         modelDoc.EditRebuild3();
 
+                        // a flange can come back with a REBUILD ERROR (round 7, Funnel_2: coplanar inlet flanges of neighbouring walls collided at the corners, the feature stayed in the tree with error 1 and built
+                        // nothing while the definition read back fine): say so instead of reporting verified
+                        try
+                        {
+                            bool flangeWarn; int flangeErr = feature != null ? feature.GetErrorCode2(out flangeWarn) : 0;
+                            if (flangeErr != 0)
+                            {
+                                if (gaugeInfo == null) gaugeInfo = new JObject { ["feature"] = feature.Name };
+                                gaugeInfo["feature_error"] = flangeErr; gaugeInfo["verified"] = false;
+                                var fpr = gaugeInfo["problems"] as JArray ?? new JArray();
+                                fpr.Add("SolidWorks rebuilt " + feature.Name + " with ERROR code " + flangeErr + ": the flange built nothing (typically it collides with a neighbouring flange or with the body); delete it or change the flange");
+                                gaugeInfo["problems"] = fpr;
+                            }
+                        }
+                        catch (Exception fex) { ExecLog.Write("edge_flange: error-code read failed: " + fex.Message); }
+
                         // profile_limits: shorten the generated profile of an edge along its length (a lip that stops short of a corner, a return flange stopped before its bends) - SolidWorksService.SheetMetalProfile.cs
                         var limitsTok = p?["profile_limits"] as JArray;
                         if (limitsTok != null && limitsTok.Count > 0 && feature != null)

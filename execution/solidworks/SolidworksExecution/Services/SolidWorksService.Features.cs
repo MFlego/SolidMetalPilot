@@ -971,9 +971,22 @@ namespace SolidworksExecution.Services
                 }
                 else if (bodyNames.Count > 0)
                 {
-                    // measured 2026-11-05: InsertMirrorFeature2(BMirrorBody) and the mirror-solid definition both return null for sheet-metal bodies
-                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "NOT_SUPPORTED",
-                        "mirror of BODIES returns null in SolidWorks for sheet-metal bodies (both API routes tried). Use a linear or circular pattern of the bodies, or mirror FEATURES (features_json).");
+                    // MIRROR OF BODIES. Measured 2026-11-12: SolidWorks' own Mirror PropertyManager refuses a SHEET-METAL body (and the Base-Flange feature), and InsertMirrorFeature2 answers null for the same
+                    // reason; a SURFACE body (or a plain solid) is accepted when it is selected with mark 256 (the Bodies to Mirror list) and the plane with mark 2. So a mirrored sheet-metal part is built from
+                    // a mirrored SURFACE: mirror the surface here, then replay the Convert on the copy (build_lib.reflect).
+                    var allB = AllBodies(modelDoc as IPartDoc, false);
+                    var smNames = bodyNames.Where(n => allB.Any(b => b.Name == n && SafeIsSheetMetal(b))).ToList();
+                    if (smNames.Count > 0)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "NOT_SUPPORTED",
+                            "SolidWorks refuses a SHEET-METAL body in its Mirror command (measured 2026-11-12; its own PropertyManager too): " + string.Join(", ", smNames) + ". Mirror the SURFACE body instead and run the Convert again on the copy.");
+                    string miss2 = SelectBodiesWithMark(modelDoc, bodyNames, 256, false);
+                    if (miss2 != null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "BODY_NOT_FOUND", miss2);
+                    string mplane = string.IsNullOrWhiteSpace(p?.Value<string>("plane")) ? "Right Plane" : p.Value<string>("plane");
+                    if (!SelectPlaneFlexible(modelDoc, mplane, true, 2))
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(), "PLANE_NOT_FOUND", $"Mirror plane '{mplane}' not found.");
+                    feature = featureMgr.InsertMirrorFeature2(true, p?.Value<bool?>("geometry_pattern") ?? false, false, false, 0) as IFeature;
+                    ExecLog.Write($"mirror of bodies: [{string.Join(",", bodyNames)}] plane={mplane} -> {(feature == null ? "NULL" : feature.Name)}");
                 }
                 else if (patternType == "linear")
                 {
@@ -1225,6 +1238,8 @@ namespace SolidworksExecution.Services
                     "UNEXPECTED_ERROR", ex.Message);
             }
         }
+
+        private static bool SafeIsSheetMetal(IBody2 b) { try { return b.IsSheetMetal(); } catch (System.Runtime.InteropServices.COMException) { return false; } }
 
         // -----------------------------------------------------------------------
         // sketch_pattern: a linear / circular STEP AND REPEAT of the entities of the ACTIVE sketch (a ring or grid of holes in ONE sketch)

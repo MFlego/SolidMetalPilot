@@ -1530,7 +1530,8 @@ def create_pattern(
     bodies = a JSON array of BODY names (e.g. '["Sheet-Metal-Body<1>"]'): patterns whole bodies instead of
         features (linear along direction, circular around axis_name; each copy is a full sheet-metal body with its own
         flat pattern and DXF; its count and spacing are dimensions D1 / D3@LPattern1 that equations can drive; a MIRROR
-        of bodies is refused: it returns null for sheet-metal bodies); feature_name is then not needed. The result reports body_pattern {bodies_before, bodies_after, new_bodies}. Use it for repeated parts
+        of bodies (pattern_type='mirror' + plane) works for SURFACE and plain solid bodies; a SHEET-METAL body is refused, SolidWorks' own Mirror
+        command refuses it too - mirror the surface and replay the Convert); feature_name is then not needed. The result reports body_pattern {bodies_before, bodies_after, new_bodies}. Use it for repeated parts
         of one multi-body part (ribs, bins, legs): one seed + a pattern whose count / spacing are driven by variables.
     pattern_type='linear': repeats feature_name along direction ('X', 'Y', or 'Z') with spacing (meters) and count instances.
         flip=True patterns toward the NEGATIVE axis (default False = positive).
@@ -2161,7 +2162,8 @@ def sheet_metal_convert(
         while they are made) - with 'early' SolidWorks raises 'Overlaps/underlaps could not be applied to all rips'
         while rip sketches are added (a watchdog answers it).
     views = '["*Isometric","*Back", ...]': the views the picker may try (default: the current one, then the standard
-        ones); hide_other_bodies (default True) hides every other body while picking and shows it again.
+        ones); "rot:dx,dy" = the isometric view turned about the screen centre by dx / dy radians (e.g. "rot:3.1416,0" =
+        seen from the opposite side: edges that crowd each other in every standard view stand apart there); hide_other_bodies (default True) hides every other body while picking and shows it again.
     accept=False leaves the PropertyManager open with the lists filled (debugging).
     Returns {accepted, feature, feature_error, lists{bend_edges, rip_sketches, rip_edges_found}, definition{...},
         picks[{target, list, mid, view, pixel, clearance_px}] (in the order they were made), sheet_metal{...},
@@ -2169,7 +2171,8 @@ def sheet_metal_convert(
     Clicks are only ever posted to SolidWorks' own graphics window: when a window of another application covers the
     graphics area the call stops with GRAPHICS_COVERED (nothing is clicked; bring SolidWorks to the front).
     Errors (nothing is left open): MISSING_PARAMETER, FACE_NOT_FOUND, EDGE_NOT_FOUND (also 'ambiguous'),
-        SKETCH_NOT_FOUND, BEND_ZONES_DO_NOT_FIT (two bends on one face closer than the sum of their take-ups, each
+        SKETCH_NOT_FOUND, RIP_SKETCH_NOT_ONE_CONTOUR (one open contour per rip sketch: two separate lines make SolidWorks
+        raise a dialog that deadlocks the call), BEND_ZONES_DO_NOT_FIT (two bends on one face closer than the sum of their take-ups, each
         (radius + thickness) x tan(deflection / 2) - 2 x (radius + thickness) for right angles, much less for the
         shallow bends of a jog - or a flange shorter than one take-up: SolidWorks would fail the build and its OK
         handler can hang), PM_ALREADY_OPEN,
