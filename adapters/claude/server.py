@@ -2314,9 +2314,11 @@ def sketch_fully_define(sketch: str = "", relations: str = "none", relate: str =
     array of explicit relations resolved by sketch coordinates (metres): [{"type": "vertical_points", "a": [x, y], "b":
     [x, y]}, ...]; types: horizontal, vertical (a = a line), fixed (a), coincident, vertical_points, horizontal_points
     (a, b = points), on_line (a point, b line), midpoint (a point, b line), equal, collinear, parallel, perpendicular,
-    tangent (a, b = lines / arcs), symmetric (a, b = points, axis = a line). A point is the sketch point nearest to its
-    coordinates (20 um), a line the nearest segment (10 um); a relation that over-defines is undone and listed in
-    `relations_skipped`.
+    tangent (a, b = lines / arcs), symmetric (a, b = points, axis = a line), merge_points (a [, b] = the end points of
+    two DIFFERENT segments at that place, e.g. a converted edge and a line drawn onto it: a coincident relation between
+    the two distinct points, which "coincident" cannot do because both coordinates name the same point). A point is the
+    sketch point nearest to its coordinates (20 um), a line the nearest segment (10 um); a relation that over-defines
+    is undone and listed in `relations_skipped`.
     Returns {sketch, status_before, constrained_status, constrained, dimensions[{name, value}], relations[],
     geometric_relations[], relations_skipped[], relation_count, redundant_dimensions_removed, problems, verified};
     verified = fully defined. Errors: NO_ACTIVE_SKETCH, SKETCH_NOT_FOUND, SKETCH_ALREADY_ACTIVE (another sketch is
@@ -2796,6 +2798,55 @@ def move_face(
     if rotation.strip():
         params["rotation"] = json.loads(rotation) if rotation.strip().startswith("{") else rotation
     return _call("move_face", params)
+
+
+# ---------------------------------------------------------------------------
+# Tool: curve_pattern
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def curve_pattern(
+    bodies: str,
+    count: int,
+    curve: str = "",
+    curve_point: str = "",
+    spacing: float = 0.0,
+    equal_spacing: bool = False,
+    curve_method: Literal["transform", "offset"] = "transform",
+    alignment: Literal["tangent", "seed"] = "tangent",
+    face_normal_point: str = "",
+) -> str:
+    """CURVE-DRIVEN PATTERN of whole BODIES (sheet-metal bodies included) along a sketch, 3D sketch, helix or edge: the
+    stairs' treads, a run of ribs along a curved rail. IN PROCESS ONLY: it drives SolidWorks' own Curve Driven Pattern
+    PropertyManager, because the API route (CreateDefinition + AccessSelections) CRASHES SolidWorks (round 5 twice, round 7
+    once). Measured: the PM accepts a sheet-metal body; 12 identical sheet-metal bodies, one cut-list item (quantity 12),
+    each with its own flat pattern.
+    bodies = a JSON array of the SEED body names ('["Break-Corner1"]'); count = instances INCLUDING the seed (>= 2);
+    curve = the NAME of the sketch / 3D sketch / helix feature ('3DSketch1', 'Helix/Spiral1'), or curve_point =
+    '[x,y,z]' (meters) ON an edge. spacing (meters, along the curve) or equal_spacing = true (the instances spread over the
+    whole curve). curve_method 'transform' (default) | 'offset'; alignment 'tangent' (default, tangent to the curve) |
+    'seed' (align to seed). face_normal_point = '[x,y,z]' ON a face (offset curve method: the face normal list).
+    The user's own CrvPattern1 of the stairs reads: offset curve, tangent, 12 instances, spacing 450.0995 mm, not equal.
+    Returns {feature, seeds, new_bodies[], bodies_before, bodies_after, new_sheet_metal_bodies, verified, problems[]}.
+    Errors: MISSING_PARAMETER, BODY_NOT_FOUND, CURVE_NOT_FOUND, SELECTION_FAILED, COMMAND_FAILED, PM_NOT_OPEN,
+    PM_CONTROL_NOT_FOUND, PATTERN_FAILED (the PM stayed open: cancelled, the status bar text is in the message)."""
+    params: dict = {"bodies": json.loads(bodies) if bodies.strip().startswith("[") else bodies, "count": count,
+                    "equal_spacing": equal_spacing, "curve_method": curve_method, "alignment": alignment}
+    if curve.strip():
+        params["curve"] = curve
+    if curve_point.strip():
+        params["curve_point"] = json.loads(curve_point) if curve_point.strip().startswith("[") else curve_point
+    if spacing:
+        params["spacing"] = spacing
+    if face_normal_point.strip():
+        params["face_normal_point"] = json.loads(face_normal_point) if face_normal_point.strip().startswith("[") else face_normal_point
+    # two calls with a pause between them: SolidWorks builds the pattern preview in its own idle loop, which a nested pump inside ONE call does not give (OK pressed in the same call fails)
+    import time
+    prep = _call_raw("curve_pattern", dict(params, stage="prepare"))
+    if prep.get("status") != "COMPLETED":
+        return map_response(prep)
+    before = (prep.get("result_geometry") or {}).get("bodies_before_names")
+    time.sleep(3.0)
+    return _call("curve_pattern", dict(params, stage="finish", bodies_before_names=before))
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ namespace SolidworksExecution.Services
             {
                 case "ui_inspect": return service.UiInspect(request);
                 case "sheet_metal_convert": return service.SheetMetalConvert(request);
+                case "curve_pattern": return service.CurvePattern(request);
                 default: return null;
             }
         }

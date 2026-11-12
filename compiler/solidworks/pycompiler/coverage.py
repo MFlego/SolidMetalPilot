@@ -76,6 +76,8 @@ EXEMPT = {
     "verify_state": _READ, "analyze_model": _READ, "analyze_drawing": _READ + " (and its drawing build mode is a separate door)", "analyze_slddrw_test": _READ,
     "get_selection": _READ, "analyze_assembly": _READ,
     "add_sketch_entities": "the batch form of add_sketch_entity; the compiler issues one entity per profile primitive",
+    "sketch_pattern": "a step-and-repeat of the active sketch's entities (hole rings and grids): a sketch helper like add_sketch_entities, no IR node yet",
+    "curve_pattern": "a curve-driven pattern of whole bodies through the Curve Driven Pattern PropertyManager (in-process only, two calls with a pause): no IR node yet (the IR's linear / circular pattern nodes do not cover a curve)",
     "add_sketch_constraint": _FROZEN, "add_dimension": _FROZEN,
     "edit_sketch": _EDIT, "edit_feature": _EDIT, "feature_data": _EDIT + " - typed read/write of a feature definition", "modify_dimension": _EDIT,
     "create_drawing": _DRAW, "add_drawing_view": _DRAW, "add_flat_pattern_view": _DRAW, "add_drawing_dimension": _DRAW, "auto_dimension_drawing": _DRAW,

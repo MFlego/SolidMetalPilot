@@ -869,6 +869,25 @@
   },
   "output": "\u2192 see execution-response.json \u2014 result_geometry {feature, move_type, faces, reverse, distance, definition{move_type, distance, reverse, angle, faces}, dimensions[], body_before, body_after, volume_change, problems[], verified}"
  },
+ "curve_pattern": {
+  "description": "CURVE-DRIVEN PATTERN of whole bodies (sheet-metal bodies included) along a sketch / 3D sketch / helix / edge. IN-PROCESS ONLY: it drives SolidWorks' Curve Driven Pattern PropertyManager (RunCommand 362), because CreateDefinition(swFmCurvePattern) + AccessSelections crashes SolidWorks. The PM takes a sheet-metal body in its Bodies list (selection mark 256): 12 identical sheet-metal bodies, one cut-list item, each with its own flat pattern.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "bodies": "JSON string/array of the seed body names (required)",
+    "count": "integer (required, >= 2: instances including the seed)",
+    "curve": "string: name of the sketch / 3D sketch / helix feature that drives the pattern (or curve_point)",
+    "curve_point": "JSON string/array [x,y,z] (meters) ON an edge (alternative to curve)",
+    "spacing": "number (meters along the curve; required unless equal_spacing)",
+    "equal_spacing": "boolean (default false)",
+    "curve_method": "string ('transform' (default) | 'offset')",
+    "alignment": "string ('tangent' (default) | 'seed')",
+    "face_normal_point": "JSON string/array [x,y,z] (meters) ON a face: the face normal list (offset curve method)"
+   }
+  },
+  "output": "→ see execution-response.json — result_geometry {feature, seeds[], new_bodies[], bodies_before, bodies_after, new_sheet_metal_bodies, count, spacing_m, equal_spacing, curve_method, alignment, problems[], verified}"
+ },
  "sheet_metal_swept_flange": {
   "description": "SWEPT FLANGE: sheet metal made by sweeping an open profile along a path, through CreateDefinition(swFmSweptFlange) -> ISweptFlangeFeatureData -> CreateFeature (no Insert call exists). The path must be given as an array of DispatchWrapper holding the path sketch's FEATURE (the only form that gives a path type; the others return null), the profile as the ISketch. The swept flange is the first feature of an empty part and creates the Sheet-Metal feature from the thickness and radius. For a profile of straight segments along one straight path the result is checked against the closed forms (volume = cross-section x path, blank = developed profile x path). Lengths meters. Bumps state_version.",
   "input": {
@@ -1002,7 +1021,7 @@
    "params": {
     "sketch": "string (optional — the name of the sketch to define; default the ACTIVE sketch. NO_ACTIVE_SKETCH when there is neither)",
     "relations": "string (optional, none | first | only; default none. MASTER-SKETCH rule, relations cut dimensions: 'first' adds a construction centre line on the Y axis with a SYMMETRIC relation for every mirrored point pair and a horizontal / vertical relation for every axis-aligned line BEFORE any dimension, then dimensions only what is left; 'only' stops after the relations so the caller adds design-intent dimensions and calls again)",
-    "relate": "array (optional, explicit relations by sketch coordinates in meters: [{type, a:[x,y], b:[x,y], axis:[x,y]}]; type = horizontal | vertical | fixed | coincident | on_line | vertical_points | horizontal_points | midpoint | equal | collinear | parallel | perpendicular | tangent | symmetric. A point = the sketch point nearest the coordinates (20 um), a line = the nearest segment (10 um); a relation that over-defines is undone and listed in relations_skipped)"
+    "relate": "array (optional, explicit relations by sketch coordinates in meters: [{type, a:[x,y], b:[x,y], axis:[x,y]}]; type = horizontal | vertical | fixed | coincident | on_line | vertical_points | horizontal_points | midpoint | equal | collinear | parallel | perpendicular | tangent | symmetric | merge_points (two end points of different segments at one place). A point = the sketch point nearest the coordinates (20 um), a line = the nearest segment (10 um); a relation that over-defines is undone and listed in relations_skipped)"
    }
   },
   "output": "→ see execution-response.json — result_geometry {sketch, status_before, constrained_status, constrained, dimensions, relations, geometric_relations, relations_skipped, relation_count, redundant_dimensions_removed, problems, verified}"

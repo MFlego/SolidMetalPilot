@@ -486,6 +486,33 @@ namespace SolidworksExecution.Services
             return bd <= tol ? best : null;
         }
 
+        // two DIFFERENT sketch points at (nearly) the same place - the end of a converted edge and the start of a drawn line that was snapped onto it: AllSketchPoints / NearestSketchPoint
+        // merge them into ONE entry, so a coincident relation between them had nothing to relate (round 6: region sketch closed to 1 micrometre, Extruded Cut null). The owner is the segment
+        // each point belongs to; the pair must come from two different segments (b = the second coordinate, a = the first; the same coordinate twice is the usual call).
+        private static bool SketchPointsOfTwoSegments(ISketch sk, double ax, double ay, double bx, double by, double tol, out ISketchPoint pa, out ISketchPoint pb, out string why)
+        {
+            var cand = new List<KeyValuePair<int, ISketchPoint>>(); int idx = 0; pa = null; pb = null; why = null;
+            foreach (var so in (sk.GetSketchSegments() as object[]) ?? new object[0])
+            {
+                var ln = so as ISketchLine; var arc = so as ISketchArc; idx++;
+                if (ln != null) { Collect(cand, idx, ln.GetStartPoint2() as ISketchPoint); Collect(cand, idx, ln.GetEndPoint2() as ISketchPoint); }
+                else if (arc != null) { if (arc.IsCircle() == 0) { Collect(cand, idx, arc.GetStartPoint2() as ISketchPoint); Collect(cand, idx, arc.GetEndPoint2() as ISketchPoint); } }
+            }
+            Func<double, double, ISketchPoint, int, ISketchPoint> pick = (x, y, not, notOwner) =>
+            {
+                ISketchPoint best = null; double bd = double.MaxValue;
+                foreach (var kv in cand) { if (kv.Key == notOwner) continue; double d = Math.Sqrt((kv.Value.X - x) * (kv.Value.X - x) + (kv.Value.Y - y) * (kv.Value.Y - y)); if (d < bd) { bd = d; best = kv.Value; } }
+                return bd <= tol ? best : null;
+            };
+            int ownerA = -1; ISketchPoint a = null; double bda = double.MaxValue;
+            foreach (var kv in cand) { double d = Math.Sqrt((kv.Value.X - ax) * (kv.Value.X - ax) + (kv.Value.Y - ay) * (kv.Value.Y - ay)); if (d < bda) { bda = d; a = kv.Value; ownerA = kv.Key; } }
+            if (a == null || bda > tol) { why = "no segment end point near the first coordinate"; return false; }
+            var b = pick(bx, by, a, ownerA);
+            if (b == null) { why = "no end point of ANOTHER segment near the second coordinate (the points of one segment cannot be merged)"; return false; }
+            pa = a; pb = b; return true;
+        }
+        private static void Collect(List<KeyValuePair<int, ISketchPoint>> list, int owner, ISketchPoint pt) { if (pt != null) list.Add(new KeyValuePair<int, ISketchPoint>(owner, pt)); }
+
         private static ISketchSegment NearestSketchSegment(ISketch sk, double x, double y, double tol)
         {
             ISketchSegment best = null; double bd = double.MaxValue;
@@ -582,7 +609,7 @@ namespace SolidworksExecution.Services
         }
 
         // the caller's relations: [{"type": ..., "a": [x, y], "b": [x, y], "axis": [x, y]}] in sketch metres; a point is the sketch point nearest to [x, y] (within 20 um), a line / arc the segment nearest to it (within 10 um)
-        //   horizontal / vertical (a = line) | fixed (a = point or line) | coincident (a, b points) | on_line (a point, b line) | vertical_points / horizontal_points (a, b points) | midpoint (a point, b line)
+        //   merge_points (a [, b]: the end points of two DIFFERENT segments at that place, e.g. a converted edge and a drawn line) | horizontal / vertical (a = line) | fixed (a = point or line) | coincident (a, b points) | on_line (a point, b line) | vertical_points / horizontal_points (a, b points) | midpoint (a point, b line)
         //   equal / collinear / parallel / perpendicular / tangent (a, b segments) | symmetric (a, b points + axis line)
         private void ApplyExplicitRelations(IModelDoc2 doc, ISketch sk, JArray list, JArray applied, JArray skipped)
         {
@@ -598,6 +625,15 @@ namespace SolidworksExecution.Services
                     case "vertical": relation = "sgVERTICAL2D"; ents = new object[] { S("a") }; break;
                     case "fixed": { object e = (object)P("a") ?? S("a"); relation = "sgFIXED"; ents = new[] { e }; break; }
                     case "coincident": relation = "sgCOINCIDENT"; ents = new object[] { P("a"), P("b") }; break;
+                    case "merge_points":
+                    {
+                        // two end points of DIFFERENT segments at the same place (a converted edge and a line drawn onto it): coincident between the two distinct points
+                        var ta = item["a"] as JArray; var tb = (item["b"] as JArray) ?? ta;
+                        if (ta == null || ta.Count < 2) { skipped.Add("merge_points needs a: [x, y]"); continue; }
+                        ISketchPoint ma, mb; string why;
+                        if (!SketchPointsOfTwoSegments(sk, ta[0].Value<double>(), ta[1].Value<double>(), tb[0].Value<double>(), tb[1].Value<double>(), 2e-5, out ma, out mb, out why)) { skipped.Add("merge_points " + item.ToString(Newtonsoft.Json.Formatting.None) + ": " + why); continue; }
+                        relation = "sgCOINCIDENT"; ents = new object[] { ma, mb }; break;
+                    }
                     case "on_line": relation = "sgCOINCIDENT"; ents = new object[] { P("a"), S("b") }; break;
                     case "vertical_points": relation = "sgVERTICALPOINTS2D"; ents = new object[] { P("a"), P("b") }; break;      // measured 2026-10-29: sgVERTICALPOINTS2D takes, sgVERTPOINTS2D is a silent no-op
                     case "horizontal_points": relation = "sgHORIZONTALPOINTS2D"; ents = new object[] { P("a"), P("b") }; break;
