@@ -1941,6 +1941,7 @@ def flat_pattern_control(
     dxf_flags: int = 5,
     leave_flat: bool = False,
     feature: str = "",
+    only_flats: str = "",
 ) -> str:
     """Control the flat pattern of the ACTIVE sheet-metal part and read the flat blank.
     Unsuppresses the Flat-Pattern feature, applies the options you give (None = leave as is), measures, exports
@@ -1956,6 +1957,11 @@ def flat_pattern_control(
         / faces / edges stay at the top level). dxf_path then writes ONE DXF PER BODY, named
         "<Flat-Pattern feature> - <dxf_path's stem>.dxf" in the same folder (dxf.files lists them; measured: a
         single-file export writes only the FIRST body's flat, whichever flat pattern is active).
+    only_flats: a JSON list of Flat-Pattern names ('["Flat-Pattern30","Flat-Pattern47"]') = the DRIVING bodies of pattern / mirror
+        groups: only those flats are unsuppressed, checked and (with dxf_path) exported; every other flat stays suppressed. Without
+        dxf_path it is a CHECK ONLY (one rebuild, nothing written). A flat pattern that does NOT rebuild (feature error) is never exported
+        (its DXF would draw the folded body): it is named in `failed_flats` and `verified` is false; the same applies to a whole-part export.
+        The driving bodies come from a STEP digest (step_digest.py: identical bodies share a signature) and the flat -> body map (flatmap.cs).
     Returns folded and flat body sizes in METERS [x, y, z] with face / edge counts - compare the flat blank with
     your closed-form blank math - the options as they read back, and the DXF size. Bumps state_version.
     Errors: NOT_SHEET_METAL, FLAT_PATTERN_ERROR, FEATURE_NOT_FOUND, SAVE_REQUIRED, MODIFY_FAILED."""
@@ -1968,6 +1974,8 @@ def flat_pattern_control(
             params[key] = val
     if dxf_path:
         params["dxf_path"] = dxf_path
+    if only_flats.strip():
+        params["only_flats"] = json.loads(only_flats) if only_flats.strip().startswith("[") else [only_flats.strip()]
     return _call("flat_pattern_control", params)
 
 

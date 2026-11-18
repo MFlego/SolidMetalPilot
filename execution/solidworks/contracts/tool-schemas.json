@@ -599,10 +599,11 @@
     "dxf_path": "string (optional — write the flat DXF here; SAVE_REQUIRED when the part has never been saved)",
     "dxf_flags": "integer (default 5 — 1 = outline, 5 = outline + bend lines)",
     "leave_flat": "boolean (default false — keep the flat pattern unsuppressed)",
-    "feature": "string (optional — which Flat-Pattern feature = which sheet-metal body when the part has several: 'Flat-Pattern1', 'Flat-Pattern13' ...; default the first; with several bodies dxf_path writes ONE DXF PER BODY named '<Flat-Pattern> - <stem>.dxf')"
+    "feature": "string (optional — which Flat-Pattern feature = which sheet-metal body when the part has several: 'Flat-Pattern1', 'Flat-Pattern13' ...; default the first; with several bodies dxf_path writes ONE DXF PER BODY named '<Flat-Pattern> - <stem>.dxf')",
+    "only_flats": "JSON list of Flat-Pattern names (optional — the DRIVING bodies of pattern / mirror groups: only these flats are checked and exported; without dxf_path it is a one-rebuild check; a flat that does not rebuild is never exported, it is named in failed_flats and verified is false)"
    }
   },
-  "output": "→ see execution-response.json — result_geometry {folded{size,faces,edges,bodies[{name,size,faces}] when several}, flat{size,faces,edges}, flat_pattern, flat_patterns[] when several, options, dxf{path,flags,written,bytes}, flat_pattern_left, verified}"
+  "output": "→ see execution-response.json — result_geometry {folded{size,faces,edges,bodies[{name,size,faces}] when several}, flat{size,faces,edges}, flat_pattern, flat_patterns[] when several, options, dxf{path,flags,written,bytes,files[]}, checked_flats[], failed_flats[], problems[], flat_pattern_left, verified}"
  },
  "sheet_metal_hem": {
   "description": "Hems the free edge(s) of sheet-metal walls (IFeatureManager.InsertSheetMetalHem2): closed, open, tear_drop (180 < angle < 270) or rolled; double is refused by SolidWorks for every parameter set tried. All edges of one call make ONE Hem feature. The hem folds toward the side of the picked edge (outer top edge -> outward). Edges are selected as objects (indices from analyze_model(edges) or points on them). Returns the hem's definition read back + body before/after. Lengths meters, angle degrees. Bumps state_version.",

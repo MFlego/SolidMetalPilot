@@ -17,7 +17,7 @@ namespace SolidworksExecution.Infrastructure
     /// A single worker thread also serializes COM access, which suits the single-writer,
     /// process-global state model the OperationGuard already assumes.
     ///
-    /// SAFETY (SheetMetalPilot fork): the call is no longer unbounded. (1) Pre-flight: when the SolidPilot Bridge add-in is loaded, a modal dialog in SolidWorks is
+    /// SAFETY (SolidMetalPilot fork): the call is no longer unbounded. (1) Pre-flight: when the SolidPilot Bridge add-in is loaded, a modal dialog in SolidWorks is
     /// reported immediately as DIALOG_BLOCKING with its text instead of queueing a call that can never finish. (2) Timeout: a call that exceeds the limit
     /// (env SWMCP_STA_TIMEOUT_SEC, default 120 s) raises SolidWorksBlockedException (with the dialog list when known) instead of hanging the HTTP request forever.
     /// The worker thread stays inside the abandoned call until SolidWorks releases it; while it is busy, new calls fail fast with SW_BUSY.

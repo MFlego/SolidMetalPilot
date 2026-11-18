@@ -719,7 +719,17 @@ namespace SolidworksExecution.Services
                 var fp = FirstOfType(doc, "FlatPattern"); if (fp == null) throw new ToolFailure("NOT_SHEET_METAL", "The active part has no Flat-Pattern feature.");
                 // a part with several sheet-metal bodies has ONE Flat-Pattern feature per body (Flat-Pattern1, Flat-Pattern13 ...): `feature` picks it, so each body gets its own blank and its own DXF
                 var flatNames = TopFeatures(doc).Where(f => f.GetTypeName2() == "FlatPattern").Select(f => f.Name).ToList();
+                // pre-v5 (2026-11-17): `only_flats` = the Flat-Pattern features to check and export. A part of pattern / mirror copies needs only the DRIVING body of each group (the copies' flats are identical): every other flat stays suppressed.
+                List<string> onlyFlats = (p["only_flats"] as JArray)?.Select(t => t.Value<string>()).Where(n => !string.IsNullOrEmpty(n)).ToList();
+                if (onlyFlats != null && onlyFlats.Count == 0) onlyFlats = null;
+                if (onlyFlats != null)
+                {
+                    var missingFlats = onlyFlats.Where(n => !flatNames.Contains(n)).ToList();
+                    if (missingFlats.Count > 0) throw new ToolFailure("FEATURE_NOT_FOUND", "No Flat-Pattern feature named " + string.Join(", ", missingFlats) + " (the part has: " + string.Join(", ", flatNames) + ").");
+                }
+                var failedFlats = new JArray();       // flat patterns that do NOT rebuild: reported, never exported (their DXF would draw the FOLDED body)
                 string fpName = p.Value<string>("feature");
+                if (string.IsNullOrEmpty(fpName) && onlyFlats != null) fpName = onlyFlats[0];
                 if (!string.IsNullOrEmpty(fpName))
                 {
                     fp = TopFeatures(doc).FirstOrDefault(f => f.GetTypeName2() == "FlatPattern" && f.Name == fpName);
@@ -732,7 +742,9 @@ namespace SolidworksExecution.Services
                 fp.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); doc.EditRebuild3();
                 try
                 {
-                    int ferr = FeatureError(fp); if (ferr != 0) throw new ToolFailure("FLAT_PATTERN_ERROR", "The flat pattern does not rebuild (feature error " + ferr + ").");
+                    int ferr = FeatureError(fp);
+                    if (ferr != 0 && onlyFlats == null) throw new ToolFailure("FLAT_PATTERN_ERROR", "The flat pattern does not rebuild (feature error " + ferr + ").");
+                    if (ferr != 0) failedFlats.Add(fp.Name);       // several flats are being checked: name them all instead of stopping at the first
                     var wanted = new Dictionary<string, JToken>(); foreach (var key in new[] { "corner_treatment", "simplify_bends", "merge_faces", "show_slit_in_corner_relief" }) if (p[key] != null) wanted[key] = p[key];
                     if (wanted.Count > 0)
                     {
@@ -755,6 +767,17 @@ namespace SolidworksExecution.Services
                     res["flat"] = BodyStats(doc);
 
                     string dxf = p.Value<string>("dxf_path");
+                    if (onlyFlats != null && string.IsNullOrEmpty(dxf))      // CHECK ONLY: the chosen flats unsuppressed together, ONE rebuild, each flat's error read, folded again afterwards
+                    {
+                        foreach (var f2 in TopFeatures(doc).Where(f => f.GetTypeName2() == "FlatPattern" && f.IsSuppressed() && onlyFlats.Contains(f.Name))) { f2.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); restoreSuppressed.Add(f2.Name); }
+                        doc.EditRebuild3();
+                        foreach (var fnm in onlyFlats)
+                        {
+                            var ff = TopFeatures(doc).FirstOrDefault(f => f.GetTypeName2() == "FlatPattern" && f.Name == fnm);
+                            if (ff != null && FeatureError(ff) != 0 && !failedFlats.Any(t => t.Value<string>() == fnm)) failedFlats.Add(fnm);
+                        }
+                        res["checked_flats"] = new JArray(onlyFlats);
+                    }
                     if (!string.IsNullOrEmpty(dxf))
                     {
                         string model = doc.GetPathName();
@@ -769,21 +792,64 @@ namespace SolidworksExecution.Services
                             res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = ok && exists, ["bytes"] = exists ? new FileInfo(dxf).Length : 0 };
                             if (!(ok && exists)) verified = false;
                         }
+                        else if (onlyFlats != null)
+                        {
+                            // ONE flat at a time (2026-11-17): unsuppress it (the others stay suppressed), rebuild, read its error, SELECT the feature and export single-file as "<Flat-Pattern> - <stem>.dxf".
+                            // SolidWorks then writes THAT body's flat only (measured on the stool: bar, bar2 and seat each correct, 9-10 s); the multi-file export below always writes every body.
+                            if (wasSuppressed) { fp.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); doc.EditRebuild3(); }
+                            var writtenOne = new JArray();
+                            foreach (var fnm in onlyFlats)
+                            {
+                                var ff = TopFeatures(doc).FirstOrDefault(f => f.GetTypeName2() == "FlatPattern" && f.Name == fnm);
+                                if (ff == null) continue;
+                                bool wasSup = ff.IsSuppressed();
+                                if (wasSup) ff.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null);
+                                doc.EditRebuild3();
+                                string fpath1 = Path.Combine(dir, fnm + " - " + stem + ".dxf"); if (File.Exists(fpath1)) File.Delete(fpath1);
+                                if (FeatureError(ff) != 0) { if (!failedFlats.Any(t => t.Value<string>() == fnm)) failedFlats.Add(fnm); }
+                                else
+                                {
+                                    doc.ClearSelection2(true); ff.Select2(false, 0);
+                                    bool okOne = part.ExportToDWG2(fpath1, model, 1, true, null, false, false, flags, null);
+                                    doc.ClearSelection2(true);
+                                    if (okOne && File.Exists(fpath1)) writtenOne.Add(new JObject { ["flat_pattern"] = fnm, ["path"] = fpath1, ["bytes"] = new FileInfo(fpath1).Length }); else verified = false;
+                                }
+                                if (wasSup) ff.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null);
+                            }
+                            doc.EditRebuild3();
+                            int expectOne = onlyFlats.Count(n => !failedFlats.Any(t => t.Value<string>() == n));
+                            res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = writtenOne.Count == expectOne, ["files"] = writtenOne };
+                            if (writtenOne.Count != expectOne) verified = false;
+                        }
                         else
                         {
                             // SEVERAL sheet-metal bodies: a single-file export writes only the FIRST body's flat (measured 2026-10-28: the second DXF was the first body's again, whichever flat pattern was active).
                             // With every flat pattern unsuppressed and ExportToSingleFile = false SolidWorks writes ONE FILE PER BODY, named "<Flat-Pattern feature> - <stem>.dxf".
-                            foreach (var f2 in TopFeatures(doc).Where(f => f.GetTypeName2() == "FlatPattern" && f.IsSuppressed())) { f2.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); restoreSuppressed.Add(f2.Name); }
+                            var exportSet = onlyFlats ?? flatNames;
+                            foreach (var f2 in TopFeatures(doc).Where(f => f.GetTypeName2() == "FlatPattern" && f.IsSuppressed() && exportSet.Contains(f.Name))) { f2.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null); restoreSuppressed.Add(f2.Name); }
                             doc.EditRebuild3();
+                            // a flat pattern that does not rebuild still gets a file, and that file draws the FOLDED bodies (stool legs, rounds 7-9): keep it out of the export and report it
+                            foreach (var fnm in exportSet)
+                            {
+                                var ff = TopFeatures(doc).FirstOrDefault(f => f.GetTypeName2() == "FlatPattern" && f.Name == fnm);
+                                if (ff == null || FeatureError(ff) == 0) continue;
+                                if (!failedFlats.Any(t => t.Value<string>() == fnm)) failedFlats.Add(fnm);
+                                ff.SetSuppression2((int)swFeatureSuppressionAction_e.swSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null);
+                                if (!restoreSuppressed.Contains(fnm)) restoreSuppressed.Add(fnm);
+                            }
+                            if (failedFlats.Count > 0) doc.EditRebuild3();
+                            int expectFiles = exportSet.Count(n => !failedFlats.Any(t => t.Value<string>() == n));
                             var before = new HashSet<string>(Directory.GetFiles(dir, "* - " + stem + ".dxf"));
                             foreach (var old in before) File.Delete(old);
                             bool ok = part.ExportToDWG2(dxf, model, 1, false, null, false, false, flags, null);
+                            foreach (var bad in failedFlats) { string badPath = Path.Combine(dir, bad.Value<string>() + " - " + stem + ".dxf"); if (File.Exists(badPath)) File.Delete(badPath); }      // SolidWorks writes a file for EVERY body: the ones that did not flatten draw the folded body
                             var written = new JArray();
-                            foreach (var fn in flatNames) { string fpath = Path.Combine(dir, fn + " - " + stem + ".dxf"); if (File.Exists(fpath)) written.Add(new JObject { ["flat_pattern"] = fn, ["path"] = fpath, ["bytes"] = new FileInfo(fpath).Length }); }
-                            res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = ok && written.Count == flatNames.Count, ["files"] = written };
-                            if (!(ok && written.Count == flatNames.Count)) verified = false;
+                            foreach (var fn in exportSet) { string fpath = Path.Combine(dir, fn + " - " + stem + ".dxf"); if (File.Exists(fpath)) written.Add(new JObject { ["flat_pattern"] = fn, ["path"] = fpath, ["bytes"] = new FileInfo(fpath).Length }); }
+                            res["dxf"] = new JObject { ["path"] = dxf, ["flags"] = flags, ["written"] = ok && written.Count == expectFiles, ["files"] = written };
+                            if (!(ok && written.Count == expectFiles)) verified = false;
                         }
                     }
+                    if (failedFlats.Count > 0) { res["failed_flats"] = failedFlats; res["problems"] = new JArray("these flat patterns do not rebuild (feature error): " + string.Join(", ", failedFlats.Select(t => t.Value<string>())) + "; no DXF was written for them (it would draw the folded body)"); verified = false; }
                     res["verified"] = verified;
                 }
                 finally
